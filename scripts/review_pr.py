@@ -148,13 +148,18 @@ Example output (two comments):
 
 def parse_claude_response(text: str) -> list[dict]:
     text = text.strip()
+    if not text:
+        return []
     if text.startswith("```json"):
         text = text[7:]
     elif text.startswith("```"):
         text = text[3:]
     if text.endswith("```"):
         text = text[:-3]
-    return json.loads(text.strip())
+    text = text.strip()
+    if not text:
+        return []
+    return json.loads(text)
 
 
 def call_claude(style_guide: str, diff: str, pr_title: str, pr_body: str) -> list[dict]:
