@@ -1,8 +1,8 @@
 # Copy this file to .github/workflows/style-review.yml in the target repo.
 #
 # Required secrets in the target repo:
-#   ANTHROPIC_BASE_URL  — corporate Claude API endpoint URL
-#   ANTHROPIC_API_KEY   — API key for that endpoint
+#   BEDROCK_ENDPOINT_URL  — full Bedrock Converse endpoint URL
+#   BEDROCK_BEARER_TOKEN  — bearer token for the corporate Bedrock endpoint
 
 name: Style Review
 
@@ -21,6 +21,6 @@ jobs:
       pr_number: ${{ github.event.pull_request.number }}
       repository: ${{ github.repository }}
     secrets:
-      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      BEDROCK_ENDPOINT_URL: ${{ secrets.BEDROCK_ENDPOINT_URL }}
+      BEDROCK_BEARER_TOKEN: ${{ secrets.BEDROCK_BEARER_TOKEN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

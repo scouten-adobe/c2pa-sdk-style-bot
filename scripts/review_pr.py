@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import anthropic
+import requests
 
 MAX_DIFF_CHARS = 80_000
 MAX_COMMENTS = 15
@@ -155,23 +155,36 @@ def parse_claude_response(text: str) -> list[dict]:
 
 
 def call_claude(style_guide: str, diff: str, pr_title: str, pr_body: str) -> list[dict]:
-    client = anthropic.Anthropic(
-        base_url=os.environ.get("ANTHROPIC_BASE_URL"),
-        api_key=os.environ["ANTHROPIC_API_KEY"],
-    )
-    model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-
-    message = client.messages.create(
-        model=model,
-        max_tokens=4096,
-        messages=[{
+    bearer_token = os.environ["BEDROCK_BEARER_TOKEN"]
+    url = os.environ["BEDROCK_ENDPOINT_URL"]
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {bearer_token}",
+    }
+    payload = {
+        "messages": [{
             "role": "user",
-            "content": build_prompt(style_guide, diff, pr_title, pr_body),
+            "content": [{"text": build_prompt(style_guide, diff, pr_title, pr_body)}],
         }],
-    )
+        "inferenceConfig": {"maxTokens": 4096},
+    }
 
-    response_text = message.content[0].text
-    return parse_claude_response(response_text)
+    response = requests.post(url, json=payload, headers=headers, timeout=120)
+    response.raise_for_status()
+    data = response.json()
+
+    stop_reason = data.get("stopReason")
+    content_blocks = data.get("output", {}).get("message", {}).get("content", [])
+    print(f"API response — stopReason: {stop_reason!r}, content blocks: {len(content_blocks)}")
+
+    text_blocks = [b["text"] for b in content_blocks if "text" in b]
+    if not text_blocks:
+        raise RuntimeError(
+            f"Bedrock returned no text content (stopReason={stop_reason!r}). "
+            f"Full response: {data}"
+        )
+
+    return parse_claude_response(text_blocks[0])
 
 
 def post_review(pr_number: str, repo: str, comments: list[dict], commit_sha: str):

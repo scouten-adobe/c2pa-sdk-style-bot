@@ -9,8 +9,8 @@
 #         pr_number: ${{ github.event.pull_request.number }}
 #         repository: ${{ github.repository }}
 #       secrets:
-#         ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
-#         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+#         BEDROCK_ENDPOINT_URL: ${{ secrets.BEDROCK_ENDPOINT_URL }}
+#         BEDROCK_BEARER_TOKEN: ${{ secrets.BEDROCK_BEARER_TOKEN }}
 #         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 name: Style Review (reusable)
@@ -26,17 +26,12 @@ on:
         description: "Target repository in owner/name format"
         required: true
         type: string
-      model:
-        description: Claude model ID to use
-        required: false
-        type: string
-        default: claude-sonnet-4-6
     secrets:
-      ANTHROPIC_BASE_URL:
-        description: Base URL for the corporate Claude API endpoint
+      BEDROCK_ENDPOINT_URL:
+        description: Full Bedrock Converse endpoint URL (kept secret to avoid exposing account/region)
         required: true
-      ANTHROPIC_API_KEY:
-        description: API key for the corporate Claude API endpoint
+      BEDROCK_BEARER_TOKEN:
+        description: Bearer token for the corporate Bedrock endpoint
         required: true
       GH_TOKEN:
         description: GitHub token with pull-requests:write permission on the target repo
@@ -63,9 +58,8 @@ jobs:
 
       - name: Run style review
         env:
-          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_MODEL: ${{ inputs.model }}
+          BEDROCK_ENDPOINT_URL: ${{ secrets.BEDROCK_ENDPOINT_URL }}
+          BEDROCK_BEARER_TOKEN: ${{ secrets.BEDROCK_BEARER_TOKEN }}
           PR_NUMBER: ${{ inputs.pr_number }}
           GITHUB_REPOSITORY: ${{ inputs.repository }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
