@@ -6,15 +6,15 @@ Our team maintains several public open-source repositories across multiple progr
 
 ## Goals
 
-1. **PR Review:** Automatically review every new PR for style guide conformance and post suggested changes.
-2. **Proactive Cleanup:** Periodically scan the main branch and open small, focused PRs that improve existing code.
-3. **Multi-repo, multi-language:** Works across the org's public repos (Rust, possibly others).
+1. **PR Review:** Automatically review every new PR for style guide conformance and post suggested changes.
+2. **Proactive Cleanup:** Periodically scan the main branch and open small, focused PRs that improve existing code.
+3. **Multi-repo, multi-language:** Works across the org's public repos (Rust, possibly others).
 4. **Extensible:** Start with Eric's personal style guide ([howicode.ericscouten.com](https://howicode.ericscouten.com/)); add team-specific rules over time.
-5. **Low cost:** Prefer free resources; accept modest compute costs for the AI backbone.
+5. **Low cost:** Prefer free resources; accept modest compute costs for the AI backbone.
 
 ## Style guide summary
 
-The bot would enforce / nudge us toward these principles:
+The bot would enforce / nudge us toward these principles:
   
 _(Eric's editorial comment: Some of these are language-preference style guides from [my personal style guide](https://howicode.ericscouten.com/) that may not apply here. And these are, of course, subject to debate and evolution.)_
 
@@ -45,13 +45,13 @@ _(Eric's editorial comment: Some of these are language-preference style guides f
 A single Markdown file that encodes our style guide as instructions for Claude. This is the single source of truth; when you update the style guide website, you update this file. It would include:
 
 - All the rules above, written as actionable review instructions
-- Per-language notes (e.g., "For Rust, check that \`rustfmt.toml\` matches these settings")
+- Per-language notes (e.g., "For Rust, check that \`rustfmt.toml\` matches these settings")
 - Examples of good vs. bad style
 - Severity levels (e.g., "sentence case in comments" = suggestion, "missing test coverage" = warning)
 
 ### Component 2: PR review workflow
 
-**Trigger:** `pull_request` events (opened, synchronize)
+**Trigger:** `pull_request` events (opened, synchronize)
 
 **Flow:**
 
@@ -60,9 +60,9 @@ A single Markdown file that encodes our style guide as instructions for Claude. 
 3. Fetch changed file contents for context (full files, not just hunks)
 4. Send to Claude API with the style guide prompt + diff + file context
 5. Parse Claude's response into file-specific inline comments
-6. Post as a **GitHub PR review** using the GitHub API (`POST /repos/{owner}/{repo}/pulls/{number}/reviews`)
+6. Post as a **GitHub PR review** using the GitHub API (`POST /repos/{owner}/{repo}/pulls/{number}/reviews`)
 
-**Output format:** A single PR review with inline comments at specific lines, using GitHub's "COMMENT" review type (not "REQUEST\_CHANGES" — keeps it advisory). Each comment would include:
+**Output format:** A single PR review with inline comments at specific lines, using GitHub's "COMMENT" review type (not "REQUEST\_CHANGES" — keeps it advisory). Each comment would include:
 
 - What the style issue is
 - A concrete suggested fix (using GitHub's suggestion syntax: ` ```suggestion `)
@@ -78,14 +78,14 @@ A single Markdown file that encodes our style guide as instructions for Claude. 
 
 **Key design decisions:**
 
-- Use `COMMENT` not `REQUEST_CHANGES` to keep the bot advisory, not blocking
+- Use `COMMENT` not `REQUEST_CHANGES` to keep the bot advisory, not blocking
 - Rate-limit: max ~15-20 comments per review to avoid overwhelming the author
 - Skip files that are auto-generated, vendored, or in `.botignore`
 - Only comment on lines that are part of the diff (new or modified lines)
 
 ### Component 3: Proactive cleanup workflow
 
-**Trigger:** Cron schedule (e.g., weekly on Monday morning)
+**Trigger:** Cron schedule (e.g., weekly on Monday morning)
 
 **Flow:**
 
@@ -106,12 +106,12 @@ A single Markdown file that encodes our style guide as instructions for Claude. 
 - Small scope: one module or one type of improvement at a time
 - Clear title: e.g., "style: Improve comment formatting in `sdk/src/parser`"
 - Description explains each change with style guide references
-- Labels: `style-bot`, `auto-generated`
+- Labels: `style-bot`, `auto-generated`
 
 **Guardrails:**
 
 - Never modify logic or behavior — style/formatting/comments only
-- Run `cargo fmt` / language formatter + `cargo check` / equivalent before opening PR
+- Run `cargo fmt` / language formatter + `cargo check` / equivalent before opening PR
 - Don't open a new PR if there's already an open style-bot PR for that module
 - Configurable: repos can opt out of proactive cleanup
 - TEMPORARY during initial development: Runs against a [separate public sandbox repo](https://github.com/scouten-adobe/TEMP-c2pa-rs), which cloned but not forked from c2pa-rs
@@ -131,23 +131,23 @@ For proactive cleanup (reviewing one module per week per repo):
 - ~10K input tokens, ~3K output tokens per module
 - 4 repos × 4 reviews/month: **~$1-2/month**
 
-**Total estimated cost: $2-5/month** for the Claude API usage. GitHub Actions minutes are free for public repos.
+**Total estimated cost: $2-5/month** for the Claude API usage. GitHub Actions minutes are free for public repos.
 
 ## Implementation plan
 
-### Phase 1: Foundation
+### Phase 1: Foundation ✅
 
-- Create the `style-bot-config` repo
-- Write the style guide prompt (converting [howicode.ericscouten.com](http://howicode.ericscouten.com/) rules into actionable review instructions)
-- Build the core review script: takes a diff + files as input, calls Claude API, returns structured comments
+- ~~Create the repo~~ — done
+- ~~Write the style guide prompt~~ ([`style-guide.md`](style-guide.md)) — 6 rules from [howicode.ericscouten.com](https://howicode.ericscouten.com/) with severity levels and examples
+- ~~Build the core review script~~ ([`scripts/review_pr.py`](scripts/review_pr.py)) — fetches PR diff, calls Claude, posts inline GitHub review comments
 - Test locally against a sample PR diff from c2pa-rs
 
-### Phase 2: PR review bot
+### Phase 2: PR review bot 🔄 in progress
 
-- Build the GitHub Actions workflow for PR review
-- Implement the comment-posting logic (inline review comments with suggestion syntax)
-- Handle edge cases: large PRs (chunking), binary files, auto-generated files
-- Deploy to c2pa-rs as a test, open a test PR
+- ~~Build the GitHub Actions workflow for PR review~~ ([`.github/workflows/pr-review.yml`](.github/workflows/pr-review.yml)) — reusable `workflow_call` workflow
+- ~~Implement the comment-posting logic~~ (inline review comments with suggestion syntax) — done in `review_pr.py`
+- ~~Handle edge cases: binary files, auto-generated files~~ — done; large PRs (chunking) still TODO
+- Deploy to a test repo, open a test PR
 
 ### Phase 3: Proactive cleanup bot
 
@@ -158,7 +158,7 @@ For proactive cleanup (reviewing one module per week per repo):
 
 ### Phase 4: Polish and multi-repo
 
-- Add `.botignore` support
+- ~~Add `.botignore` support~~ — done in `review_pr.py`
 - Add per-repo configuration overrides
 - Deploy to a second repo to validate multi-repo support
 - Write documentation for onboarding new repos
@@ -204,7 +204,7 @@ This is worth building as a later enhancement.
 
 ## Open questions
 
-1. **Bot identity:** Use a dedicated GitHub bot account or a personal access token? (Bot account is cleaner for team repos.)
-2. **Review gating:** Should the bot review be required to pass before merge, or purely advisory? (Recommend: advisory to start.)
-3. **Cleanup PR approval:** Should cleanup PRs auto-merge after CI passes, or always require human review? (Recommend: always human review to start.)
-4. **Prompt iteration:** How do you want to iterate on the style guide prompt? Track it in the config repo with PRs, or iterate more informally?
+1. **Bot identity:** Use a dedicated GitHub bot account or a personal access token? (Bot account is cleaner for team repos.)
+2. **Review gating:** Should the bot review be required to pass before merge, or purely advisory? (Recommend: advisory to start.)
+3. **Cleanup PR approval:** Should cleanup PRs auto-merge after CI passes, or always require human review? (Recommend: always human review to start.)
+4. **Prompt iteration:** How do you want to iterate on the style guide prompt? Track it in the config repo with PRs, or iterate more informally?
