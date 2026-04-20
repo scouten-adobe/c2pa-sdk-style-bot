@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -124,7 +125,9 @@ def build_prompt(style_guide: str, diff: str, pr_title: str, pr_body: str) -> st
      - A concrete `suggestion` code block if a fix is straightforward (use GitHub suggestion syntax: three backticks followed by `suggestion`)
    - `severity` (string): one of `"suggestion"`, `"warning"`, or `"info"`
 
-4. Return **only** a JSON array — no prose, no code fences wrapping the JSON itself. If there are no issues, return `[]`.
+4. If multiple rules are violated on the same line, **consolidate them into a single comment** that covers all violations. List each rule name and explanation in the same comment body, and provide only one `suggestion` block that fixes all issues at once.
+
+5. Return **only** a JSON array — no prose, no code fences wrapping the JSON itself. If there are no issues, return `[]`.
 
 Example output (two comments):
 [
@@ -185,6 +188,46 @@ def call_claude(style_guide: str, diff: str, pr_title: str, pr_body: str) -> lis
         )
 
     return parse_claude_response(text_blocks[0])
+
+
+_SUGGESTION_BLOCK = re.compile(r"```suggestion\n.*?```", re.DOTALL)
+
+
+def _merge_comment_group(group: list[dict]) -> dict:
+    suggestions = []
+    stripped_bodies = []
+    for c in group:
+        body = c["body"]
+        m = _SUGGESTION_BLOCK.search(body)
+        if m:
+            suggestions.append(m.group(0))
+            stripped_bodies.append(_SUGGESTION_BLOCK.sub("", body).rstrip())
+        else:
+            stripped_bodies.append(body)
+
+    severity_rank = {"info": 0, "suggestion": 1, "warning": 2}
+    severity = max(
+        (c.get("severity", "suggestion") for c in group),
+        key=lambda s: severity_rank.get(s, 1),
+    )
+
+    combined = "\n\n---\n\n".join(stripped_bodies)
+    if suggestions:
+        combined += "\n\n" + suggestions[-1]
+
+    return {"path": group[0]["path"], "line": group[0]["line"], "body": combined, "severity": severity}
+
+
+def consolidate_comments(comments: list[dict]) -> list[dict]:
+    """Merge multiple comments targeting the same (path, line) into one."""
+    groups: dict[tuple, list[dict]] = {}
+    for c in comments:
+        groups.setdefault((c["path"], c["line"]), []).append(c)
+
+    result = []
+    for group in groups.values():
+        result.append(group[0] if len(group) == 1 else _merge_comment_group(group))
+    return result
 
 
 def post_review(pr_number: str, repo: str, comments: list[dict], commit_sha: str):
@@ -280,6 +323,12 @@ def main():
     if len(comments) < len(raw_comments):
         skipped = len(raw_comments) - len(comments)
         print(f"Skipped {skipped} comment(s) for ignored/generated files.")
+
+    before_consolidation = len(comments)
+    comments = consolidate_comments(comments)
+    merged = before_consolidation - len(comments)
+    if merged:
+        print(f"Consolidated {merged} duplicate comment(s) at the same line.")
 
     post_review(pr_number, repo, comments, pr_info["headRefOid"])
 
