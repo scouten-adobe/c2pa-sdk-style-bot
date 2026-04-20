@@ -142,12 +142,12 @@ For proactive cleanup (reviewing one module per week per repo):
 - ~~Build the core review script~~ ([`scripts/review_pr.py`](scripts/review_pr.py)) — fetches PR diff, calls Claude, posts inline GitHub review comments
 - Test locally against a sample PR diff from c2pa-rs
 
-### Phase 2: PR review bot 🔄 in progress
+### Phase 2: PR review bot ✅
 
 - ~~Build the GitHub Actions workflow for PR review~~ ([`.github/workflows/pr-review.yml`](.github/workflows/pr-review.yml)) — reusable `workflow_call` workflow
 - ~~Implement the comment-posting logic~~ (inline review comments with suggestion syntax) — done in `review_pr.py`
 - ~~Handle edge cases: binary files, auto-generated files~~ — done; large PRs (chunking) still TODO
-- Deploy to a test repo, open a test PR
+- ~~Deploy to a test repo, open a test PR~~ — successfully generated review comments against a sample PR in a sandbox repo
 
 ### Phase 3: Proactive cleanup bot
 
