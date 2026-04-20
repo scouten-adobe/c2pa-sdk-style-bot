@@ -147,6 +147,7 @@ Example output (two comments):
 
 
 def parse_claude_response(text: str) -> list[dict]:
+    print(f"Raw response text ({len(text)} chars): {text!r}")
     text = text.strip()
     if not text:
         return []
@@ -159,7 +160,11 @@ def parse_claude_response(text: str) -> list[dict]:
     text = text.strip()
     if not text:
         return []
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        print(f"Warning: could not parse Claude response as JSON ({e}); treating as no comments.")
+        return []
 
 
 def call_claude(style_guide: str, diff: str, pr_title: str, pr_body: str) -> list[dict]:
