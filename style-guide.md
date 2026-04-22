@@ -134,13 +134,23 @@ Think of them like paragraph breaks in prose.
 - Separate parsing/setup from computation from output
 - Add blank lines around multi-line expressions to give them visual breathing room
 - Group related fields in structs with blank lines between conceptual groups
+- In `match` / `switch` statements, put a blank line between arms whenever
+  at least one arm spans more than a single line. Single-line arms can stay
+  contiguous, but as soon as any arm has a body block or multi-line expression,
+  separate every arm in that statement with a blank line.
 
-**When to flag:** If a contiguous block inside a function or branch contains
-roughly 8 or more statement lines with no blank line between them, and you
-can identify at least one natural conceptual boundary (e.g., "parse input" →
-"do the work" → "build result"), flag it and suggest a blank-line break at
-that boundary. Prefer flagging the first (outermost) offending block rather
-than every nested one.
+**When to flag:**
+
+1. If a contiguous block inside a function or branch contains roughly 8 or
+   more statement lines with no blank line between them, and you can identify
+   at least one natural conceptual boundary (e.g., "parse input" → "do the
+   work" → "build result"), flag it and suggest a blank-line break at that
+   boundary. Prefer flagging the first (outermost) offending block rather
+   than every nested one.
+
+2. If a `match` / `switch` statement has two or more arms and at least one
+   arm spans multiple lines, flag any adjacent arms that aren't separated by
+   a blank line.
 
 **What to avoid:**
 - No blank lines between logically separate sections (hard to parse)
@@ -294,6 +304,44 @@ stylistic disagreements.
 ```
 
 **Reference:** <https://howicode.ericscouten.com/language/grammar>
+
+---
+
+## Rule 9: Complete-sentence comments go on their own line
+
+**Severity:** suggestion
+
+**Rule:** If a comment reads as a complete sentence — a full thought with a
+subject and verb, explaining *what is happening* or *why* — it belongs on
+its own line above the code it describes, and must follow Rule 2 (leading
+capital, trailing period).
+
+Trailing end-of-line comments should be reserved for short fragments that
+label the adjacent literal, field, or value. If you find yourself writing a
+full explanatory sentence as a trailing comment, move it to its own line.
+
+**This does NOT override Rule 2 Exception 2.** Short sentence fragments
+that label data — e.g., `let x = 5; // retry budget` or `C2PA_MARKER, //
+CAI UUID signature` — remain valid as trailing comments and do not need
+sentence-case or terminal punctuation. The trigger for *this* rule is that
+the trailing comment is already phrased as a full sentence.
+
+**Good:**
+```rust
+// Skip the first frame because the decoder primes it with zeros.
+let output = decode(&frames[1..]);
+
+let retries = 3; // retry budget
+C2PA_MARKER, // CAI UUID signature
+```
+
+**Bad:**
+```rust
+let output = decode(&frames[1..]); // Skip the first frame because the decoder primes it with zeros.
+let retries = 3; // This is the retry budget we use when the network is flaky.
+```
+
+**Reference:** <https://howicode.ericscouten.com/language/complete-sentences>
 
 ---
 

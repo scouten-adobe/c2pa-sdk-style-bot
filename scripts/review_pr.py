@@ -12,7 +12,7 @@ from pathlib import Path
 import requests
 
 MAX_DIFF_CHARS = 80_000
-MAX_COMMENTS = 15
+MAX_COMMENTS = 25
 CONTEXT_LINES = 20  # lines of surrounding context shown to Claude around each hunk
 ALIGNMENT_SEARCH_RADIUS = 5  # how far to look when correcting off-by-N line numbers
 
