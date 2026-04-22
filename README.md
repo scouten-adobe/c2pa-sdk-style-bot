@@ -140,7 +140,7 @@ For proactive cleanup (reviewing one module per week per repo):
 - ~~Create the repo~~ — done
 - ~~Write the style guide prompt~~ ([`style-guide.md`](style-guide.md)) — 6 rules from [howicode.ericscouten.com](https://howicode.ericscouten.com/) with severity levels and examples
 - ~~Build the core review script~~ ([`scripts/review_pr.py`](scripts/review_pr.py)) — fetches PR diff, calls Claude, posts inline GitHub review comments
-- Test locally against a sample PR diff from c2pa-rs
+- ~~Test locally against a sample PR diff from c2pa-rs~~ – DONE
 
 ### Phase 2: PR review bot ✅
 
