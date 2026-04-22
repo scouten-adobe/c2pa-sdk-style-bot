@@ -129,6 +129,8 @@ def build_prompt(style_guide: str, diff: str, pr_title: str, pr_body: str) -> st
 
 5. Return **only** a JSON array — no prose, no code fences wrapping the JSON itself. If there are no issues, return `[]`.
 
+6. **CRITICAL output format**: Your entire response must start with the character `[` and end with the character `]`. Do not write any text, explanation, reasoning, preamble, or analysis before or after the JSON array. Do your analysis silently; only the JSON array should appear in your output.
+
 Example output (two comments):
 [
   {{
@@ -220,16 +222,17 @@ def call_claude(style_guide: str, diff: str, pr_title: str, pr_body: str) -> lis
                 "role": "user",
                 "content": [{"text": build_prompt(style_guide, diff, pr_title, pr_body)}],
             },
-            {
-                "role": "assistant",
-                "content": [{"text": "["}],
-            },
         ],
         "inferenceConfig": {"maxTokens": 4096},
     }
 
     response = requests.post(url, json=payload, headers=headers, timeout=120)
-    response.raise_for_status()
+    if not response.ok:
+        print(
+            f"Bedrock returned HTTP {response.status_code}. Body: {response.text[:2000]}",
+            file=sys.stderr,
+        )
+        response.raise_for_status()
     data = response.json()
 
     stop_reason = data.get("stopReason")
@@ -243,9 +246,7 @@ def call_claude(style_guide: str, diff: str, pr_title: str, pr_body: str) -> lis
             f"Full response: {data}"
         )
 
-    # Bedrock does not echo the prefill in the response, so prepend it back
-    # before parsing.
-    return parse_claude_response("[" + text_blocks[0])
+    return parse_claude_response(text_blocks[0])
 
 
 _SUGGESTION_BLOCK = re.compile(r"```suggestion\n.*?```", re.DOTALL)
