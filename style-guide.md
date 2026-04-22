@@ -51,6 +51,22 @@ capital letter and trailing period. The keyword casing is governed by Rule 1;
 the body text is governed by this rule. Always flag admonition bodies that
 omit the leading capital or trailing period, even if the keyword is correct.
 
+**Mechanical rubric you MUST apply to every standalone-line comment in scope
+(a line whose only content after the indent is a `//`, `///`, `//!`, `#`,
+`"""`, or similar comment marker):**
+
+1. Is the first character of the comment body lowercase? → violation of Rule 1.
+2. Does the comment body end with a period (or `?` / `!`)? → if not, violation of Rule 2.
+3. Apply this rubric even to short comments (three or four words). The only
+   comments exempt from the leading-capital / trailing-period requirement
+   are trailing end-of-line comments covered by Exception 2 below — not
+   standalone comments, regardless of how short or casual they look.
+
+Examples of standalone comments that MUST be flagged:
+- `// we need at least 16 bytes in each segment for CAI` → lowercase "we", no period.
+- `// check if this is a CAI JUMBF block` → lowercase "check", no period.
+- `// create dummy JUMBF seg` → lowercase "create", no period.
+
 **Exceptions:**
 
 1. **Titles and captions** (section headings in docs, short field descriptions
@@ -148,12 +164,15 @@ Think of them like paragraph breaks in prose.
 
 **When to flag:**
 
-1. If a contiguous block inside a function or branch contains roughly 8 or
+1. If a contiguous block inside a function or branch contains roughly 6 or
    more statement lines with no blank line between them, and you can identify
    at least one natural conceptual boundary (e.g., "parse input" → "do the
    work" → "build result"), flag it and suggest a blank-line break at that
    boundary. Prefer flagging the first (outermost) offending block rather
-   than every nested one.
+   than every nested one. Multi-line expressions (e.g., a builder chain, an
+   `Some(...)`-wrapped result, or a `match` arm body) count as a single
+   "statement line" for this purpose — what matters is the visual run of
+   back-to-back code without breathing room.
 
 2. If a `match` / `switch` statement has two or more arms and at least one
    arm spans multiple lines, flag any adjacent arms that aren't separated by
