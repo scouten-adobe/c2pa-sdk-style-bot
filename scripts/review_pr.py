@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Review a pull request against the style guide and post an inline GitHub review."""
 
+import base64
 import json
 import os
 import re
@@ -12,6 +13,8 @@ import requests
 
 MAX_DIFF_CHARS = 80_000
 MAX_COMMENTS = 15
+CONTEXT_LINES = 20  # lines of surrounding context shown to Claude around each hunk
+ALIGNMENT_SEARCH_RADIUS = 5  # how far to look when correcting off-by-N line numbers
 
 SKIP_EXTENSIONS = {
     ".lock", ".pb", ".pb.go", ".min.js", ".min.css", ".svg", ".png",
@@ -78,13 +81,128 @@ def get_pr_diff(pr_number: str, repo: str) -> str:
     return diff
 
 
+_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_NEW_FILE_HEADER_RE = re.compile(r"^\+\+\+ b/(.+)$")
+
+
+def parse_diff_hunks(diff: str) -> dict[str, list[tuple[int, int]]]:
+    """Return per-path list of (new_start, new_end) inclusive ranges for each hunk."""
+    hunks: dict[str, list[tuple[int, int]]] = {}
+    current_path: str | None = None
+    for line in diff.splitlines():
+        m = _NEW_FILE_HEADER_RE.match(line)
+        if m:
+            path = m.group(1)
+            current_path = None if path == "dev/null" else path
+            if current_path is not None:
+                hunks.setdefault(current_path, [])
+            continue
+        m = _HUNK_HEADER_RE.match(line)
+        if m and current_path is not None:
+            new_start = int(m.group(1))
+            new_count = int(m.group(2)) if m.group(2) is not None else 1
+            if new_count > 0:
+                hunks[current_path].append((new_start, new_start + new_count - 1))
+    return hunks
+
+
+def fetch_file_lines(repo: str, path: str, ref: str) -> list[str] | None:
+    """Fetch file content at ref and return it as a list of lines, or None on failure."""
+    result = subprocess.run(
+        ["gh", "api", f"/repos/{repo}/contents/{path}", "-f", f"ref={ref}"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"Warning: could not fetch {path}@{ref[:7]}: {result.stderr.strip()}", file=sys.stderr)
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    encoded = data.get("content")
+    if not encoded:
+        return None
+    try:
+        text = base64.b64decode(encoded).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return text.splitlines()
+
+
+def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge overlapping/adjacent (start, end) inclusive ranges."""
+    if not ranges:
+        return []
+    ordered = sorted(ranges)
+    merged = [ordered[0]]
+    for s, e in ordered[1:]:
+        ms, me = merged[-1]
+        if s <= me + 1:
+            merged[-1] = (ms, max(me, e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def build_file_sections(
+    repo: str,
+    ref: str,
+    hunks: dict[str, list[tuple[int, int]]],
+    botignore: list[str],
+) -> tuple[str, dict[str, list[str]]]:
+    """Build the per-file context block for the prompt and return a cache of file lines."""
+    sections: list[str] = []
+    file_cache: dict[str, list[str]] = {}
+
+    for path in sorted(hunks):
+        if not hunks[path]:
+            continue
+        if should_skip_file(path) or matches_botignore(path, botignore):
+            continue
+        lines = fetch_file_lines(repo, path, ref)
+        if lines is None:
+            continue
+        file_cache[path] = lines
+
+        hunk_ranges = hunks[path]
+        display_windows = _merge_ranges([
+            (max(1, s - CONTEXT_LINES), min(len(lines), e + CONTEXT_LINES))
+            for s, e in hunk_ranges
+        ])
+
+        hunk_ranges_str = ", ".join(f"{s}-{e}" for s, e in hunk_ranges)
+
+        chunk: list[str] = [
+            f"### File: {path}",
+            f"**In-scope line ranges (new-file line numbers where you may post comments):** {hunk_ranges_str}",
+            "",
+            "**File content (line numbers shown; lines outside in-scope ranges are context only):**",
+            "```",
+        ]
+        for i, (ws, we) in enumerate(display_windows):
+            if i > 0:
+                chunk.append("...")
+            for n in range(ws, we + 1):
+                chunk.append(f"{n:5d}: {lines[n - 1]}")
+        chunk.append("```")
+        sections.append("\n".join(chunk))
+
+    return "\n\n".join(sections), file_cache
+
+
 def get_style_guide() -> str:
     guide_path = Path(__file__).parent.parent / "style-guide.md"
     return guide_path.read_text()
 
 
-def build_prompt(style_guide: str, diff: str, pr_title: str, pr_body: str) -> str:
-    return f"""You are a code style reviewer for an open-source project. Review the pull request diff below against the provided style guide and return inline review comments as a JSON array.
+def build_prompt(
+    style_guide: str,
+    file_sections: str,
+    diff: str,
+    pr_title: str,
+    pr_body: str,
+) -> str:
+    return f"""You are a code style reviewer for an open-source project. Review the pull request changes below against the provided style guide and return inline review comments as a JSON array.
 
 ## Style Guide
 
@@ -101,7 +219,15 @@ def build_prompt(style_guide: str, diff: str, pr_title: str, pr_body: str) -> st
 
 ---
 
-## Diff
+## Files changed (with surrounding context)
+
+Each file shows the new-file content around the changed regions with real line numbers on the left. **You may only post comments on lines inside the declared in-scope ranges for that file.** Lines outside those ranges are shown for context so you can understand the surrounding code; never flag them.
+
+{file_sections}
+
+---
+
+## Diff (for reference)
 
 ```diff
 {diff}
@@ -111,18 +237,19 @@ def build_prompt(style_guide: str, diff: str, pr_title: str, pr_body: str) -> st
 
 ## Instructions
 
-1. Identify style violations in the diff. Only flag lines that are **additions** (lines starting with `+`, but NOT the `+++` file header lines).
+1. Identify style violations on lines **inside the declared in-scope ranges** above. Consider the surrounding context, but do not flag lines outside in-scope ranges even if they contain violations — they are not part of this change.
 
 2. Be selective — flag only genuine violations of the rules above. Do not invent rules. Do not flag code style preferences that aren't in the guide. Focus on the {MAX_COMMENTS} most impactful issues.
 
 3. For each issue, produce a JSON object with:
-   - `path` (string): file path as shown after `+++ b/` in the diff header (without the `b/` prefix)
-   - `line` (integer): the **new file** line number where the issue appears (the line number in the file after the change, not the diff position)
+   - `path` (string): file path (no `a/` or `b/` prefix)
+   - `line` (integer): the new-file line number where the issue appears, copied from the numbered listing above
+   - `original_line` (string): the exact, verbatim current content of that line in the new file (copy it from the numbered listing; omit the line-number prefix and the `: ` separator, but preserve all leading/trailing whitespace in the actual code). This is used to verify alignment — if it doesn't match the file, your comment will be dropped.
    - `body` (string): GitHub-flavored markdown comment body including:
      - Bold header: the rule name
      - Reference link to the style guide page
      - Brief explanation of the issue
-     - A concrete `suggestion` code block if a fix is straightforward (use GitHub suggestion syntax: three backticks followed by `suggestion`)
+     - A concrete `suggestion` code block if a fix is straightforward (use GitHub suggestion syntax: three backticks followed by `suggestion`). The suggestion block **replaces the single line at `line`** — make sure its content is a drop-in replacement for `original_line`, preserving the same indentation and surrounding code structure.
    - `severity` (string): one of `"suggestion"`, `"warning"`, or `"info"`
 
 4. If multiple rules are violated on the same line, **consolidate them into a single comment** that covers all violations. List each rule name and explanation in the same comment body, and provide only one `suggestion` block that fixes all issues at once.
@@ -136,12 +263,14 @@ Example output (two comments):
   {{
     "path": "src/lib.rs",
     "line": 42,
-    "body": "**Style: Use complete sentences in comments** ([Reference](https://howicode.ericscouten.com/language/complete-sentences))\\n\\nThis comment is missing a trailing period and a capital letter.\\n\\n```suggestion\\n// Recursively apply passthrough replacement and write the result.\\n```",
+    "original_line": "    // recursively apply passthrough replacement and write",
+    "body": "**Style: Use complete sentences in comments** ([Reference](https://howicode.ericscouten.com/language/complete-sentences))\\n\\nThis comment is missing a trailing period and a capital letter.\\n\\n```suggestion\\n    // Recursively apply passthrough replacement and write the result.\\n```",
     "severity": "suggestion"
   }},
   {{
     "path": "src/parser.rs",
     "line": 17,
+    "original_line": "// Parses The Header Block",
     "body": "**Style: Use sentence case** ([Reference](https://howicode.ericscouten.com/language/sentence-case))\\n\\nComment uses title case. Only capitalize the first word and proper nouns.",
     "severity": "suggestion"
   }}
@@ -209,19 +338,24 @@ def parse_claude_response(text: str) -> list[dict]:
         return []
 
 
-def call_claude(style_guide: str, diff: str, pr_title: str, pr_body: str) -> list[dict]:
+def call_claude(
+    style_guide: str,
+    file_sections: str,
+    diff: str,
+    pr_title: str,
+    pr_body: str,
+) -> list[dict]:
     bearer_token = os.environ["BEDROCK_BEARER_TOKEN"]
     url = os.environ["BEDROCK_ENDPOINT_URL"]
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {bearer_token}",
     }
+    prompt = build_prompt(style_guide, file_sections, diff, pr_title, pr_body)
+    print(f"Prompt size: {len(prompt):,} chars")
     payload = {
         "messages": [
-            {
-                "role": "user",
-                "content": [{"text": build_prompt(style_guide, diff, pr_title, pr_body)}],
-            },
+            {"role": "user", "content": [{"text": prompt}]},
         ],
         "inferenceConfig": {"maxTokens": 4096},
     }
@@ -250,6 +384,90 @@ def call_claude(style_guide: str, diff: str, pr_title: str, pr_body: str) -> lis
 
 
 _SUGGESTION_BLOCK = re.compile(r"```suggestion\n.*?```", re.DOTALL)
+
+
+def _line_in_ranges(line: int, ranges: list[tuple[int, int]]) -> bool:
+    return any(s <= line <= e for s, e in ranges)
+
+
+def _strip_suggestion(body: str) -> str:
+    return _SUGGESTION_BLOCK.sub("", body).rstrip()
+
+
+def align_comments(
+    comments: list[dict],
+    file_cache: dict[str, list[str]],
+    hunks: dict[str, list[tuple[int, int]]],
+) -> list[dict]:
+    """Verify each comment's `original_line` against the actual file content.
+
+    - If it matches at the given `line`, keep the comment as-is.
+    - If it matches at a nearby line, correct `line` and keep the comment.
+    - If it doesn't match anywhere nearby, strip the suggestion block (keeping
+      the explanation) so a misaligned suggestion can't destroy real code.
+    - If `line` falls outside any diff hunk, drop the comment (GitHub rejects it).
+    """
+    result: list[dict] = []
+    for c in comments:
+        path = c.get("path")
+        line = c.get("line")
+        if not isinstance(path, str) or not isinstance(line, int):
+            print(f"Dropping comment with invalid path/line: {c!r}", file=sys.stderr)
+            continue
+        if path not in file_cache:
+            print(f"Dropping comment on unavailable file {path}: {c!r}", file=sys.stderr)
+            continue
+
+        lines = file_cache[path]
+        ranges = hunks.get(path, [])
+        original = (c.get("original_line") or "").rstrip("\n")
+        body = c.get("body", "")
+
+        def file_line(n: int) -> str | None:
+            if 1 <= n <= len(lines):
+                return lines[n - 1]
+            return None
+
+        corrected = line
+        aligned = original != "" and file_line(line) is not None and file_line(line).rstrip() == original.rstrip()
+
+        if not aligned and original:
+            for delta in range(1, ALIGNMENT_SEARCH_RADIUS + 1):
+                for cand in (line - delta, line + delta):
+                    if file_line(cand) is not None and file_line(cand).rstrip() == original.rstrip():
+                        corrected = cand
+                        aligned = True
+                        break
+                if aligned:
+                    break
+
+        if not aligned:
+            print(
+                f"Alignment failure on {path}:{line}: original_line={original!r} does not match "
+                f"file content within ±{ALIGNMENT_SEARCH_RADIUS} lines; stripping suggestion block.",
+                file=sys.stderr,
+            )
+            body = _strip_suggestion(body)
+            if not body:
+                print(f"Dropping comment on {path}:{line} — empty after stripping suggestion.", file=sys.stderr)
+                continue
+
+        if not _line_in_ranges(corrected, ranges):
+            print(
+                f"Dropping comment on {path}:{corrected} — outside diff hunk ranges {ranges}.",
+                file=sys.stderr,
+            )
+            continue
+
+        if corrected != line:
+            print(f"Corrected {path}:{line} -> {path}:{corrected} based on original_line match.")
+
+        new_c = dict(c)
+        new_c["line"] = corrected
+        new_c["body"] = body
+        new_c.pop("original_line", None)
+        result.append(new_c)
+    return result
 
 
 def _merge_comment_group(group: list[dict]) -> dict:
@@ -364,18 +582,28 @@ def main():
 
     botignore = load_botignore(os.environ.get("GITHUB_WORKSPACE", "."))
     pr_info = get_pr_info(pr_number, repo)
+    head_sha = pr_info["headRefOid"]
     diff = get_pr_diff(pr_number, repo)
     style_guide = get_style_guide()
 
     print(f"Diff size: {len(diff):,} chars")
 
-    raw_comments = call_claude(style_guide, diff, pr_info["title"], pr_info.get("body") or "")
+    hunks = parse_diff_hunks(diff)
+    print(f"Parsed hunks for {len(hunks)} file(s).")
+
+    file_sections, file_cache = build_file_sections(repo, head_sha, hunks, botignore)
+    print(f"Built file sections for {len(file_cache)} file(s) ({len(file_sections):,} chars).")
+
+    raw_comments = call_claude(
+        style_guide, file_sections, diff, pr_info["title"], pr_info.get("body") or ""
+    )
     print(f"Claude returned {len(raw_comments)} candidate comment(s).")
 
     # Filter comments for skipped/ignored files
     comments = [
         c for c in raw_comments
-        if not should_skip_file(c["path"])
+        if isinstance(c.get("path"), str)
+        and not should_skip_file(c["path"])
         and not matches_botignore(c["path"], botignore)
     ]
 
@@ -383,13 +611,19 @@ def main():
         skipped = len(raw_comments) - len(comments)
         print(f"Skipped {skipped} comment(s) for ignored/generated files.")
 
+    before_align = len(comments)
+    comments = align_comments(comments, file_cache, hunks)
+    dropped = before_align - len(comments)
+    if dropped:
+        print(f"Dropped {dropped} misaligned or out-of-range comment(s).")
+
     before_consolidation = len(comments)
     comments = consolidate_comments(comments)
     merged = before_consolidation - len(comments)
     if merged:
         print(f"Consolidated {merged} duplicate comment(s) at the same line.")
 
-    post_review(pr_number, repo, comments, pr_info["headRefOid"])
+    post_review(pr_number, repo, comments, head_sha)
 
 
 if __name__ == "__main__":
