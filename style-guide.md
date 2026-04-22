@@ -164,7 +164,7 @@ Think of them like paragraph breaks in prose.
 
 **When to flag:**
 
-1. If a contiguous block inside a function or branch contains roughly 6 or
+1. If a contiguous block inside a function or branch contains roughly 5 or
    more statement lines with no blank line between them, and you can identify
    at least one natural conceptual boundary (e.g., "parse input" → "do the
    work" → "build result"), flag it and suggest a blank-line break at that
@@ -172,7 +172,10 @@ Think of them like paragraph breaks in prose.
    than every nested one. Multi-line expressions (e.g., a builder chain, an
    `Some(...)`-wrapped result, or a `match` arm body) count as a single
    "statement line" for this purpose — what matters is the visual run of
-   back-to-back code without breathing room.
+   back-to-back code without breathing room. Apply this test to **every**
+   offending run in the diff, including short `if`/`else` branches whose
+   body happens to be 5–8 lines long. Do not skip a run just because it's
+   inside a larger region where you already flagged another Rule 4 issue.
 
 2. If a `match` / `switch` statement has two or more arms and at least one
    arm spans multiple lines, flag any adjacent arms that aren't separated by
