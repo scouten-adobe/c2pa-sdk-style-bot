@@ -280,7 +280,7 @@ Each file shows the new-file content around the changed regions with real line n
 
 1. Identify style violations on lines **inside the declared in-scope ranges** above (these are the lines ADDED by this PR). Consider the surrounding context when judging the change, but **never flag unchanged lines** — even if they contain style issues, they are not part of this change. In particular, a line shown near a deletion but unchanged in the new file is out of scope.
 
-2. Be selective — flag only genuine violations of the rules above. Do not invent rules. Do not flag code style preferences that aren't in the guide. Focus on the {MAX_COMMENTS} most impactful issues.
+2. **Scan exhaustively, not selectively.** Walk every in-scope line and check it against every rule in the style guide. Do not stop early after finding a handful of issues; do not prioritize "impactful" issues over others; do not drop minor violations to keep the list short. Report every genuine violation you can find, up to a cap of {MAX_COMMENTS} comments. Pay particular attention to structural rules that span a range of lines — Rule 4 (vertical whitespace, including blank lines between multi-line `match`/`switch` arms) and Rule 9 (trailing comments that describe behavior) — since these are easy to miss when reading comment-by-comment. Do not invent rules that aren't in the guide, and do not flag stylistic preferences that aren't covered.
 
 3. For each issue, produce a JSON object with:
    - `path` (string): file path (no `a/` or `b/` prefix)

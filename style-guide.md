@@ -150,7 +150,45 @@ Think of them like paragraph breaks in prose.
 
 2. If a `match` / `switch` statement has two or more arms and at least one
    arm spans multiple lines, flag any adjacent arms that aren't separated by
-   a blank line.
+   a blank line. When this happens, post a single comment on the first arm
+   of the statement that is missing the separator, describing the problem
+   once for the whole statement — do not post one comment per arm.
+
+**Good (match arms separated by blank lines):**
+```rust
+match seg.marker() {
+    markers::APP11 => {
+        // Handle JUMBF marker.
+        let raw = seg.contents();
+        process(raw);
+    }
+
+    markers::APP1 => {
+        // Handle XMP / Exif marker.
+        positions.push(make_position(seg));
+    }
+
+    _ => {
+        positions.push(make_position(seg));
+    }
+}
+```
+
+**Bad (multi-line match arms with no blank lines between them):**
+```rust
+match seg.marker() {
+    markers::APP11 => {
+        let raw = seg.contents();
+        process(raw);
+    }
+    markers::APP1 => {
+        positions.push(make_position(seg));
+    }
+    _ => {
+        positions.push(make_position(seg));
+    }
+}
+```
 
 **What to avoid:**
 - No blank lines between logically separate sections (hard to parse)
@@ -307,29 +345,39 @@ stylistic disagreements.
 
 ---
 
-## Rule 9: Complete-sentence comments go on their own line
+## Rule 9: Trailing comments that describe behavior go on their own line
 
 **Severity:** suggestion
 
-**Rule:** If a comment reads as a complete sentence — a full thought with a
-subject and verb, explaining *what is happening* or *why* — it belongs on
-its own line above the code it describes, and must follow Rule 2 (leading
-capital, trailing period).
+**Rule:** Trailing end-of-line comments are reserved for **short noun-phrase
+fragments that label the adjacent value, field, or literal**. If the trailing
+comment instead describes **what the statement does** — the action or
+behavior of that line of code — move it to its own line above the statement
+and rewrite it as a complete sentence (Rule 2: leading capital, trailing
+period).
 
-Trailing end-of-line comments should be reserved for short fragments that
-label the adjacent literal, field, or value. If you find yourself writing a
-full explanatory sentence as a trailing comment, move it to its own line.
+**How to tell which is which:**
 
-**This does NOT override Rule 2 Exception 2.** Short sentence fragments
-that label data — e.g., `let x = 5; // retry budget` or `C2PA_MARKER, //
-CAI UUID signature` — remain valid as trailing comments and do not need
-sentence-case or terminal punctuation. The trigger for *this* rule is that
-the trailing comment is already phrased as a full sentence.
+- **Labels a value** (OK as trailing fragment): you could replace it with a
+  named constant or a `name:` prefix and it would still make sense. Examples:
+  `let retries = 3; // retry budget`, `C2PA_MARKER, // CAI UUID signature`,
+  `0x1F, // start-of-image marker`.
+- **Describes an action** (move to its own line, write as full sentence):
+  starts with an imperative verb (`store`, `skip`, `flush`, `initialize`,
+  `fetch`), or uses a verb phrase that narrates what the code is doing.
+  Examples: `// store the identifier`, `// skip the header`,
+  `// flush to disk`.
+
+**This does NOT override Rule 2 Exception 2.** Short fragments that label
+data stay valid as trailing comments and do not need sentence case or a
+trailing period. This rule targets action/behavior narration, regardless of
+length — even a two-word imperative like `// store the identifier` is an
+action description and should move.
 
 **Good:**
 ```rust
-// Skip the first frame because the decoder primes it with zeros.
-let output = decode(&frames[1..]);
+// Store the identifier for later comparison against subsequent segments.
+cai_en.clone_from(&en);
 
 let retries = 3; // retry budget
 C2PA_MARKER, // CAI UUID signature
@@ -337,8 +385,9 @@ C2PA_MARKER, // CAI UUID signature
 
 **Bad:**
 ```rust
+cai_en.clone_from(&en); // store the identifier
+output.flush()?; // flush to disk
 let output = decode(&frames[1..]); // Skip the first frame because the decoder primes it with zeros.
-let retries = 3; // This is the retry budget we use when the network is flaky.
 ```
 
 **Reference:** <https://howicode.ericscouten.com/language/complete-sentences>
