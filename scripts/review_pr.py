@@ -507,6 +507,46 @@ def consolidate_comments(comments: list[dict]) -> list[dict]:
     return result
 
 
+def delete_previous_bot_comments(pr_number: str, repo: str, bot_login: str) -> int:
+    """Delete all inline review comments authored by `bot_login` on this PR.
+
+    GitHub has no API to delete a COMMENTED review summary, but removing the
+    inline threads means the stale summary has no attached discussion.
+    """
+    owner, repo_name = repo.split("/", 1)
+    result = subprocess.run(
+        ["gh", "api", "--paginate",
+         f"/repos/{owner}/{repo_name}/pulls/{pr_number}/comments"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"Warning: could not list prior review comments: {result.stderr.strip()}", file=sys.stderr)
+        return 0
+    try:
+        comments = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        print("Warning: could not parse prior review comments as JSON.", file=sys.stderr)
+        return 0
+
+    deleted = 0
+    for c in comments:
+        if c.get("user", {}).get("login") != bot_login:
+            continue
+        cid = c.get("id")
+        if cid is None:
+            continue
+        dr = subprocess.run(
+            ["gh", "api", "--method", "DELETE",
+             f"/repos/{owner}/{repo_name}/pulls/comments/{cid}"],
+            capture_output=True, text=True,
+        )
+        if dr.returncode == 0:
+            deleted += 1
+        else:
+            print(f"Warning: could not delete comment {cid}: {dr.stderr.strip()}", file=sys.stderr)
+    return deleted
+
+
 def post_review(pr_number: str, repo: str, comments: list[dict], commit_sha: str):
     owner, repo_name = repo.split("/", 1)
     api_path = f"/repos/{owner}/{repo_name}/pulls/{pr_number}/reviews"
@@ -579,6 +619,11 @@ def main():
         sys.exit(1)
 
     print(f"Reviewing PR #{pr_number} in {repo} ...")
+
+    bot_login = os.environ.get("BOT_LOGIN", "github-actions[bot]")
+    removed = delete_previous_bot_comments(pr_number, repo, bot_login)
+    if removed:
+        print(f"Deleted {removed} prior inline comment(s) authored by {bot_login}.")
 
     botignore = load_botignore(os.environ.get("GITHUB_WORKSPACE", "."))
     pr_info = get_pr_info(pr_number, repo)
