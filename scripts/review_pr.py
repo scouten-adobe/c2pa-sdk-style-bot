@@ -146,6 +146,38 @@ Example output (two comments):
 ]"""
 
 
+def _extract_json_array(text: str) -> str | None:
+    """Find the first top-level JSON array in text by bracket matching.
+
+    Tracks string literals so brackets inside strings don't confuse the scan.
+    """
+    start = text.find("[")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
 def parse_claude_response(text: str) -> list[dict]:
     print(f"Raw response text ({len(text)} chars): {text!r}")
     text = text.strip()
@@ -162,8 +194,16 @@ def parse_claude_response(text: str) -> list[dict]:
         return []
     try:
         return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    array_text = _extract_json_array(text)
+    if array_text is None:
+        print("Warning: no JSON array found in Claude response; treating as no comments.")
+        return []
+    try:
+        return json.loads(array_text)
     except json.JSONDecodeError as e:
-        print(f"Warning: could not parse Claude response as JSON ({e}); treating as no comments.")
+        print(f"Warning: extracted JSON array failed to parse ({e}); treating as no comments.")
         return []
 
 
@@ -175,10 +215,16 @@ def call_claude(style_guide: str, diff: str, pr_title: str, pr_body: str) -> lis
         "Authorization": f"Bearer {bearer_token}",
     }
     payload = {
-        "messages": [{
-            "role": "user",
-            "content": [{"text": build_prompt(style_guide, diff, pr_title, pr_body)}],
-        }],
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"text": build_prompt(style_guide, diff, pr_title, pr_body)}],
+            },
+            {
+                "role": "assistant",
+                "content": [{"text": "["}],
+            },
+        ],
         "inferenceConfig": {"maxTokens": 4096},
     }
 
@@ -197,7 +243,9 @@ def call_claude(style_guide: str, diff: str, pr_title: str, pr_body: str) -> lis
             f"Full response: {data}"
         )
 
-    return parse_claude_response(text_blocks[0])
+    # Bedrock does not echo the prefill in the response, so prepend it back
+    # before parsing.
+    return parse_claude_response("[" + text_blocks[0])
 
 
 _SUGGESTION_BLOCK = re.compile(r"```suggestion\n.*?```", re.DOTALL)
