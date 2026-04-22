@@ -85,25 +85,62 @@ _HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 _NEW_FILE_HEADER_RE = re.compile(r"^\+\+\+ b/(.+)$")
 
 
-def parse_diff_hunks(diff: str) -> dict[str, list[tuple[int, int]]]:
-    """Return per-path list of (new_start, new_end) inclusive ranges for each hunk."""
-    hunks: dict[str, list[tuple[int, int]]] = {}
+def parse_diff_added_ranges(diff: str) -> dict[str, list[tuple[int, int]]]:
+    """Return per-path list of (start, end) inclusive ranges of *added* new-file lines.
+
+    Only lines prefixed with '+' in the diff body are in-scope. Context lines
+    (prefix ' ') are excluded even when they fall inside a hunk, because an
+    unchanged line adjacent to a deletion is not actually part of this change.
+    """
+    added: dict[str, list[int]] = {}
     current_path: str | None = None
+    new_counter = 0
+    in_hunk = False
+
     for line in diff.splitlines():
         m = _NEW_FILE_HEADER_RE.match(line)
         if m:
             path = m.group(1)
             current_path = None if path == "dev/null" else path
             if current_path is not None:
-                hunks.setdefault(current_path, [])
+                added.setdefault(current_path, [])
+            in_hunk = False
+            continue
+        if line.startswith("diff --git ") or line.startswith("--- "):
+            in_hunk = False
             continue
         m = _HUNK_HEADER_RE.match(line)
         if m and current_path is not None:
-            new_start = int(m.group(1))
-            new_count = int(m.group(2)) if m.group(2) is not None else 1
-            if new_count > 0:
-                hunks[current_path].append((new_start, new_start + new_count - 1))
-    return hunks
+            new_counter = int(m.group(1))
+            in_hunk = True
+            continue
+        if not in_hunk or current_path is None:
+            continue
+        if line.startswith(" "):
+            new_counter += 1
+        elif line.startswith("+"):
+            added[current_path].append(new_counter)
+            new_counter += 1
+        elif line.startswith("-") or line.startswith("\\"):
+            pass
+        else:
+            in_hunk = False
+
+    result: dict[str, list[tuple[int, int]]] = {}
+    for path, lines in added.items():
+        if not lines:
+            result[path] = []
+            continue
+        lines.sort()
+        ranges = [(lines[0], lines[0])]
+        for n in lines[1:]:
+            s, e = ranges[-1]
+            if n == e + 1:
+                ranges[-1] = (s, n)
+            else:
+                ranges.append((n, n))
+        result[path] = ranges
+    return result
 
 
 def fetch_file_lines(repo: str, path: str, ref: str) -> list[str] | None:
@@ -151,15 +188,16 @@ def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
 def build_file_sections(
     repo: str,
     ref: str,
-    hunks: dict[str, list[tuple[int, int]]],
+    added_ranges: dict[str, list[tuple[int, int]]],
     botignore: list[str],
 ) -> tuple[str, dict[str, list[str]]]:
     """Build the per-file context block for the prompt and return a cache of file lines."""
     sections: list[str] = []
     file_cache: dict[str, list[str]] = {}
 
-    for path in sorted(hunks):
-        if not hunks[path]:
+    for path in sorted(added_ranges):
+        ranges = added_ranges[path]
+        if not ranges:
             continue
         if should_skip_file(path) or matches_botignore(path, botignore):
             continue
@@ -168,19 +206,18 @@ def build_file_sections(
             continue
         file_cache[path] = lines
 
-        hunk_ranges = hunks[path]
         display_windows = _merge_ranges([
             (max(1, s - CONTEXT_LINES), min(len(lines), e + CONTEXT_LINES))
-            for s, e in hunk_ranges
+            for s, e in ranges
         ])
 
-        hunk_ranges_str = ", ".join(f"{s}-{e}" for s, e in hunk_ranges)
+        ranges_str = ", ".join(f"{s}-{e}" if s != e else str(s) for s, e in ranges)
 
         chunk: list[str] = [
             f"### File: {path}",
-            f"**In-scope line ranges (new-file line numbers where you may post comments):** {hunk_ranges_str}",
+            f"**In-scope line ranges (lines ADDED by this PR — the only lines you may post comments on):** {ranges_str}",
             "",
-            "**File content (line numbers shown; lines outside in-scope ranges are context only):**",
+            "**File content (line numbers shown; unchanged lines outside the in-scope ranges are context only — do not flag them even if they contain style issues):**",
             "```",
         ]
         for i, (ws, we) in enumerate(display_windows):
@@ -241,7 +278,7 @@ Each file shows the new-file content around the changed regions with real line n
 
 ## Instructions
 
-1. Identify style violations on lines **inside the declared in-scope ranges** above. Consider the surrounding context, but do not flag lines outside in-scope ranges even if they contain violations — they are not part of this change.
+1. Identify style violations on lines **inside the declared in-scope ranges** above (these are the lines ADDED by this PR). Consider the surrounding context when judging the change, but **never flag unchanged lines** — even if they contain style issues, they are not part of this change. In particular, a line shown near a deletion but unchanged in the new file is out of scope.
 
 2. Be selective — flag only genuine violations of the rules above. Do not invent rules. Do not flag code style preferences that aren't in the guide. Focus on the {MAX_COMMENTS} most impactful issues.
 
@@ -401,7 +438,7 @@ def _strip_suggestion(body: str) -> str:
 def align_comments(
     comments: list[dict],
     file_cache: dict[str, list[str]],
-    hunks: dict[str, list[tuple[int, int]]],
+    added_ranges: dict[str, list[tuple[int, int]]],
 ) -> list[dict]:
     """Verify each comment's `original_line` against the actual file content.
 
@@ -409,7 +446,8 @@ def align_comments(
     - If it matches at a nearby line, correct `line` and keep the comment.
     - If it doesn't match anywhere nearby, strip the suggestion block (keeping
       the explanation) so a misaligned suggestion can't destroy real code.
-    - If `line` falls outside any diff hunk, drop the comment (GitHub rejects it).
+    - If the final line is not in the added-line ranges, drop the comment —
+      unchanged lines (even those shown as hunk context) are out of scope.
     """
     result: list[dict] = []
     for c in comments:
@@ -423,7 +461,7 @@ def align_comments(
             continue
 
         lines = file_cache[path]
-        ranges = hunks.get(path, [])
+        ranges = added_ranges.get(path, [])
         original = (c.get("original_line") or "").rstrip("\n")
         body = c.get("body", "")
 
@@ -458,7 +496,8 @@ def align_comments(
 
         if not _line_in_ranges(corrected, ranges):
             print(
-                f"Dropping comment on {path}:{corrected} — outside diff hunk ranges {ranges}.",
+                f"Dropping comment on {path}:{corrected} — line was not added by this PR "
+                f"(added ranges: {ranges}).",
                 file=sys.stderr,
             )
             continue
@@ -637,10 +676,11 @@ def main():
 
     print(f"Diff size: {len(diff):,} chars")
 
-    hunks = parse_diff_hunks(diff)
-    print(f"Parsed hunks for {len(hunks)} file(s).")
+    added_ranges = parse_diff_added_ranges(diff)
+    total_files = sum(1 for r in added_ranges.values() if r)
+    print(f"Parsed {total_files} file(s) with added lines.")
 
-    file_sections, file_cache = build_file_sections(repo, head_sha, hunks, botignore)
+    file_sections, file_cache = build_file_sections(repo, head_sha, added_ranges, botignore)
     print(f"Built file sections for {len(file_cache)} file(s) ({len(file_sections):,} chars).")
 
     raw_comments = call_claude(
@@ -661,7 +701,7 @@ def main():
         print(f"Skipped {skipped} comment(s) for ignored/generated files.")
 
     before_align = len(comments)
-    comments = align_comments(comments, file_cache, hunks)
+    comments = align_comments(comments, file_cache, added_ranges)
     dropped = before_align - len(comments)
     if dropped:
         print(f"Dropped {dropped} misaligned or out-of-range comment(s).")
