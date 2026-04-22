@@ -476,9 +476,13 @@ Apply the full rule set above to this PR title. Note these specifics:
 
 - **PR titles must NOT end with a period.** This is an explicit exception to Rule 2's complete-sentence requirement (see Rule 2, Exception 3). If the current title ends with a period, that is itself a violation — remove it.
 - Rule 5 (Conventional Commits format) applies: a good PR title looks like `type(scope): description` or `type: description`.
-- Rule 1 (sentence case): the description portion after any `type:` or `type(scope):` prefix should start with a capital letter (proper nouns stay capitalized).
+- **Rule 1 (sentence case) applies to the description portion after any `type:` or `type(scope):` prefix.** The first word of the description MUST start with a capital letter. This overrides the common Conventional Commits convention of lowercase descriptions. Examples:
+  - `perf: optimize signing passes` → **violation** — must be `perf: Optimize signing passes`
+  - `fix(parser): handle empty input` → **violation** — must be `fix(parser): Handle empty input`
+  - `feat: Add multi-line support` → compliant
+  - `Optimize signing passes` (no prefix) → compliant (already capitalized)
 - Rules 3, 7, 8 apply (acronym casing, no informal abbreviations, grammar).
-- Only propose a retitle for clear rule violations — not for stylistic preferences.
+- Only propose a retitle for clear rule violations — not for stylistic preferences. A lowercase first word of the description after a `type:` prefix IS a clear violation.
 
 Output a single JSON object.
 
