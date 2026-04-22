@@ -45,14 +45,32 @@ colon after the keyword.
 punctuation. A complete sentence starts with a capital letter and ends with
 a period (or other appropriate terminal punctuation).
 
-**Exception:** Titles and captions (e.g., section headings in docs, short
-field descriptions in structs) may omit the trailing period if they are not
-full sentences. These should still use sentence case.
+**This applies to admonition bodies.** The text after `TODO:`, `FIXME:`,
+`NOTE:`, `WARNING:`, `HACK:` must itself be a complete sentence — leading
+capital letter and trailing period. The keyword casing is governed by Rule 1;
+the body text is governed by this rule. Always flag admonition bodies that
+omit the leading capital or trailing period, even if the keyword is correct.
+
+**Exceptions:**
+
+1. **Titles and captions** (section headings in docs, short field descriptions
+   in structs) may omit the trailing period if they are not full sentences.
+   Still use sentence case.
+
+2. **Short descriptive fragments** that label a data structure, a variable's
+   contents, or a specific value — typically end-of-line comments next to a
+   literal, struct field, or single statement — may be sentence fragments.
+   They do **not** require a leading capital or trailing period. Acronym
+   casing (Rule 3) and informal-abbreviation rules (Rule 7) still apply,
+   as does grammar (Rule 8).
 
 **Good:**
 ```rust
 // Recursively apply passthrough replacement and write the result.
 /// Returns the number of items processed.
+// TODO: Investigate whether this edge case can actually occur.
+let mut no_bytes = vec![0; 50]; // enough bytes to be valid
+no_bytes.splice(16..20, C2PA_MARKER); // CAI UUID signature
 ```
 
 **Bad:**
@@ -60,6 +78,8 @@ full sentences. These should still use sentence case.
 // recursively apply passthrough replacement and write the result
 /// returns the number of items processed
 // Check for null
+// TODO: investigate this edge case      // admonition body needs capital + period
+// TODO: optimize this by implementing a streaming parser   // same problem
 ```
 
 **Reference:** <https://howicode.ericscouten.com/language/complete-sentences>
@@ -100,7 +120,7 @@ struct ExifFileReader { ... }  // should be XmpFileReader if it's XMP
 
 ## Rule 4: Use vertical whitespace intentionally
 
-**Severity:** info
+**Severity:** suggestion
 
 **Rule:** Use blank lines to separate distinct logical sections within a
 function or block. Blank lines signal transitions between different concerns.
@@ -109,6 +129,13 @@ Think of them like paragraph breaks in prose.
 - Separate parsing/setup from computation from output
 - Add blank lines around multi-line expressions to give them visual breathing room
 - Group related fields in structs with blank lines between conceptual groups
+
+**When to flag:** If a contiguous block inside a function or branch contains
+roughly 8 or more statement lines with no blank line between them, and you
+can identify at least one natural conceptual boundary (e.g., "parse input" →
+"do the work" → "build result"), flag it and suggest a blank-line break at
+that boundary. Prefer flagging the first (outermost) offending block rather
+than every nested one.
 
 **What to avoid:**
 - No blank lines between logically separate sections (hard to parse)
@@ -185,6 +212,83 @@ tests. Prefer testing edge cases and error paths, not just the happy path.
 (e.g., `main()`, simple re-exports, pure wrappers with no logic).
 
 **Reference:** <https://howicode.ericscouten.com/credit-cards/code-coverage>
+
+---
+
+## Rule 7: Spell out informal word abbreviations
+
+**Severity:** suggestion
+
+**Rule:** In comments and documentation, prefer full words to informal
+partial-word abbreviations. Words like `seg`, `func`, `msg`, `cnt`, `tmp`,
+`buf` (outside of established API names), `idx`, `ptr` reduce readability
+when the full word would fit just as easily.
+
+**Exceptions:**
+
+- **Language keywords and conventional identifiers:** `impl`, `fn`, `mut`,
+  `ref`, `pub` in Rust; similar keywords in other languages. These are
+  part of the language, not informal shortenings.
+- **Domain-standard acronyms:** `HTTP`, `URL`, `JSON`, `XMP`, `JUMBF`, etc.
+  See Rule 3 for casing.
+- **Established identifiers in the surrounding code.** Do not flag a
+  variable name just because it uses an abbreviation — that's a naming
+  convention, not a comment.
+
+This rule targets **free-text prose in comments**, not identifier names.
+
+**Good:**
+```rust
+// Create a dummy JUMBF segment.
+// The message counter wraps around at u32::MAX.
+```
+
+**Bad:**
+```rust
+// create dummy JUMBF seg
+// The msg cnt wraps around at u32::MAX.
+```
+
+**Reference:** <https://howicode.ericscouten.com/language/no-abbreviations>
+
+---
+
+## Rule 8: Basic grammar and typos
+
+**Severity:** suggestion
+
+**Rule:** Check comments and documentation for clear grammatical errors.
+Be conservative — only flag high-confidence fixes. Do not flag
+stylistic disagreements.
+
+**What to catch:**
+
+- **Possessive apostrophes:** `for completeness sake` → `for completeness' sake`;
+  `the users data` → `the user's data`.
+- **Homophones:** `it's` vs `its`; `they're` / `their` / `there`;
+  `your` vs `you're`; `to` / `too` / `two`.
+- **Subject-verb agreement:** `the list contain` → `the list contains`.
+- **Clear typos:** `teh` → `the`, `recieve` → `receive`.
+
+**Do NOT flag:**
+
+- Stylistic variations (e.g., Oxford comma preference).
+- Regional spelling differences (US vs UK; "color" vs "colour").
+- Anything where the error is ambiguous or a judgment call.
+
+**Good:**
+```rust
+// Save other for completeness' sake.
+// The list contains three entries when parsing succeeds.
+```
+
+**Bad:**
+```rust
+// save other for completeness sake
+// The list contain three entries when parsing succeed.
+```
+
+**Reference:** <https://howicode.ericscouten.com/language/grammar>
 
 ---
 
