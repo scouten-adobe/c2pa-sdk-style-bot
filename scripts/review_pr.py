@@ -108,8 +108,12 @@ def parse_diff_hunks(diff: str) -> dict[str, list[tuple[int, int]]]:
 
 def fetch_file_lines(repo: str, path: str, ref: str) -> list[str] | None:
     """Fetch file content at ref and return it as a list of lines, or None on failure."""
+    # Put ref in the URL query string. Using `-f ref=...` would cause gh api
+    # to switch to POST and hit the wrong endpoint.
+    from urllib.parse import quote
+    api_url = f"/repos/{repo}/contents/{quote(path)}?ref={quote(ref)}"
     result = subprocess.run(
-        ["gh", "api", f"/repos/{repo}/contents/{path}", "-f", f"ref={ref}"],
+        ["gh", "api", api_url],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
