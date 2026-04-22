@@ -58,11 +58,18 @@ omit the leading capital or trailing period, even if the keyword is correct.
    Still use sentence case.
 
 2. **Short descriptive fragments** that label a data structure, a variable's
-   contents, or a specific value — typically end-of-line comments next to a
-   literal, struct field, or single statement — may be sentence fragments.
-   They do **not** require a leading capital or trailing period. Acronym
-   casing (Rule 3) and informal-abbreviation rules (Rule 7) still apply,
-   as does grammar (Rule 8).
+   contents, or a specific value may be sentence fragments. They do **not**
+   require a leading capital or trailing period. Acronym casing (Rule 3) and
+   informal-abbreviation rules (Rule 7) still apply, as does grammar (Rule 8).
+
+   **Scope of this exception, narrow and strict:** this applies ONLY to
+   trailing end-of-line comments attached to a literal, struct field, or
+   single statement (e.g., `C2PA_MARKER, // CAI UUID signature`). A comment
+   that occupies its own line — even a very short one like `// check length`
+   or `// we need 16 bytes for CAI` — is NOT covered by this exception and
+   must obey Rule 2 (leading capital, trailing period) and Rule 1 (sentence
+   case). If you see a standalone-line comment that starts lowercase or
+   lacks terminal punctuation, flag it.
 
 3. **Pull request titles and commit message summaries** must **not** end
    with a trailing period. The rest of this rule still applies (leading
