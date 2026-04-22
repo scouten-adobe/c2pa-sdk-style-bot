@@ -64,6 +64,11 @@ omit the leading capital or trailing period, even if the keyword is correct.
    casing (Rule 3) and informal-abbreviation rules (Rule 7) still apply,
    as does grammar (Rule 8).
 
+3. **Pull request titles and commit message summaries** must **not** end
+   with a trailing period. The rest of this rule still applies (leading
+   capital after any `type:` or `type(scope):` prefix, proper acronym
+   casing, etc.), as do all other rules.
+
 **Good:**
 ```rust
 // Recursively apply passthrough replacement and write the result.

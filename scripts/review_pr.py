@@ -379,26 +379,17 @@ def parse_claude_response(text: str) -> list[dict]:
         return []
 
 
-def call_claude(
-    style_guide: str,
-    file_sections: str,
-    diff: str,
-    pr_title: str,
-    pr_body: str,
-) -> list[dict]:
+def _bedrock_completion(prompt: str, *, max_tokens: int = 4096) -> str:
+    """Send a single-turn prompt to the Bedrock endpoint and return the response text."""
     bearer_token = os.environ["BEDROCK_BEARER_TOKEN"]
     url = os.environ["BEDROCK_ENDPOINT_URL"]
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {bearer_token}",
     }
-    prompt = build_prompt(style_guide, file_sections, diff, pr_title, pr_body)
-    print(f"Prompt size: {len(prompt):,} chars")
     payload = {
-        "messages": [
-            {"role": "user", "content": [{"text": prompt}]},
-        ],
-        "inferenceConfig": {"maxTokens": 4096},
+        "messages": [{"role": "user", "content": [{"text": prompt}]}],
+        "inferenceConfig": {"maxTokens": max_tokens},
     }
 
     response = requests.post(url, json=payload, headers=headers, timeout=120)
@@ -420,8 +411,135 @@ def call_claude(
             f"Bedrock returned no text content (stopReason={stop_reason!r}). "
             f"Full response: {data}"
         )
+    return text_blocks[0]
 
-    return parse_claude_response(text_blocks[0])
+
+def call_claude(
+    style_guide: str,
+    file_sections: str,
+    diff: str,
+    pr_title: str,
+    pr_body: str,
+) -> list[dict]:
+    prompt = build_prompt(style_guide, file_sections, diff, pr_title, pr_body)
+    print(f"Prompt size: {len(prompt):,} chars")
+    return parse_claude_response(_bedrock_completion(prompt))
+
+
+def _extract_json_object(text: str) -> str | None:
+    """Find the first top-level JSON object in text by balanced-brace matching."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def build_title_prompt(style_guide: str, pr_title: str) -> str:
+    return f"""You are reviewing the title of a pull request against the style guide below.
+
+## Style Guide
+
+{style_guide}
+
+---
+
+## PR Title
+
+{pr_title}
+
+---
+
+## Instructions
+
+Apply the full rule set above to this PR title. Note these specifics:
+
+- **PR titles must NOT end with a period.** This is an explicit exception to Rule 2's complete-sentence requirement (see Rule 2, Exception 3). If the current title ends with a period, that is itself a violation — remove it.
+- Rule 5 (Conventional Commits format) applies: a good PR title looks like `type(scope): description` or `type: description`.
+- Rule 1 (sentence case): the description portion after any `type:` or `type(scope):` prefix should start with a capital letter (proper nouns stay capitalized).
+- Rules 3, 7, 8 apply (acronym casing, no informal abbreviations, grammar).
+- Only propose a retitle for clear rule violations — not for stylistic preferences.
+
+Output a single JSON object.
+
+If the title has one or more clear violations, output:
+{{
+  "needs_retitle": true,
+  "new_title": "<revised title with violations fixed, no trailing period>",
+  "reason": "<one or two sentences citing the specific rule(s) violated>"
+}}
+
+If the title is compliant, output exactly:
+{{"needs_retitle": false}}
+
+**CRITICAL output format:** Your entire response must be a single JSON object, starting with `{{` and ending with `}}`. No prose, no code fences, no analysis before or after.
+"""
+
+
+def review_pr_title(style_guide: str, pr_title: str) -> dict:
+    """Ask Claude to evaluate the PR title. Returns a dict with needs_retitle/new_title/reason."""
+    prompt = build_title_prompt(style_guide, pr_title)
+    print(f"Title-review prompt size: {len(prompt):,} chars")
+    raw = _bedrock_completion(prompt, max_tokens=512)
+    print(f"Title-review raw response ({len(raw)} chars): {raw!r}")
+
+    text = raw.strip()
+    if text.startswith("```json"):
+        text = text[7:]
+    elif text.startswith("```"):
+        text = text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
+
+    parsed: dict | None = None
+    if text:
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            obj = _extract_json_object(text)
+            if obj is not None:
+                try:
+                    parsed = json.loads(obj)
+                except json.JSONDecodeError as e:
+                    print(f"Warning: title-review JSON object failed to parse ({e}).", file=sys.stderr)
+
+    if not isinstance(parsed, dict):
+        print("Warning: title-review response was not a JSON object; treating as compliant.", file=sys.stderr)
+        return {"needs_retitle": False}
+    return parsed
+
+
+def retitle_pr(pr_number: str, repo: str, new_title: str) -> bool:
+    """Update the PR title via gh. Returns True on success."""
+    result = subprocess.run(
+        ["gh", "pr", "edit", pr_number, "--repo", repo, "--title", new_title],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"Warning: could not retitle PR: {result.stderr.strip()}", file=sys.stderr)
+        return False
+    return True
 
 
 _SUGGESTION_BLOCK = re.compile(r"```suggestion\n.*?```", re.DOTALL)
@@ -590,7 +708,13 @@ def delete_previous_bot_comments(pr_number: str, repo: str, bot_login: str) -> i
     return deleted
 
 
-def post_review(pr_number: str, repo: str, comments: list[dict], commit_sha: str):
+def post_review(
+    pr_number: str,
+    repo: str,
+    comments: list[dict],
+    commit_sha: str,
+    title_note: str | None = None,
+):
     owner, repo_name = repo.split("/", 1)
     api_path = f"/repos/{owner}/{repo_name}/pulls/{pr_number}/reviews"
 
@@ -602,6 +726,9 @@ def post_review(pr_number: str, repo: str, comments: list[dict], commit_sha: str
             f"Style review found {count} issue{'s' if count != 1 else ''}. "
             "See inline comments below."
         )
+
+    if title_note:
+        summary += "\n\n" + title_note
 
     gh_comments = [
         {
@@ -674,6 +801,31 @@ def main():
     diff = get_pr_diff(pr_number, repo)
     style_guide = get_style_guide()
 
+    original_title = pr_info["title"]
+    title_review = review_pr_title(style_guide, original_title)
+    title_note: str | None = None
+    effective_title = original_title
+    if title_review.get("needs_retitle"):
+        new_title = (title_review.get("new_title") or "").strip()
+        reason = (title_review.get("reason") or "").strip()
+        if new_title and new_title != original_title:
+            if retitle_pr(pr_number, repo, new_title):
+                effective_title = new_title
+                print(f"Retitled PR: {original_title!r} -> {new_title!r}")
+                title_note = (
+                    f"_I also updated the PR title: `{original_title}` → `{new_title}`"
+                    + (f" ({reason})_" if reason else "_")
+                )
+            else:
+                title_note = (
+                    f"_The PR title appears to violate the style guide "
+                    f"(suggested: `{new_title}`"
+                    + (f" — {reason}" if reason else "")
+                    + "), but I was unable to update it automatically._"
+                )
+        elif new_title:
+            print("Title-review suggested the same title; skipping retitle.")
+
     print(f"Diff size: {len(diff):,} chars")
 
     added_ranges = parse_diff_added_ranges(diff)
@@ -684,7 +836,7 @@ def main():
     print(f"Built file sections for {len(file_cache)} file(s) ({len(file_sections):,} chars).")
 
     raw_comments = call_claude(
-        style_guide, file_sections, diff, pr_info["title"], pr_info.get("body") or ""
+        style_guide, file_sections, diff, effective_title, pr_info.get("body") or ""
     )
     print(f"Claude returned {len(raw_comments)} candidate comment(s).")
 
@@ -712,7 +864,7 @@ def main():
     if merged:
         print(f"Consolidated {merged} duplicate comment(s) at the same line.")
 
-    post_review(pr_number, repo, comments, head_sha)
+    post_review(pr_number, repo, comments, head_sha, title_note=title_note)
 
 
 if __name__ == "__main__":
