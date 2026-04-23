@@ -411,6 +411,12 @@ def _bedrock_completion(prompt: str, *, max_tokens: int = 4096) -> str:
             f"Bedrock returned no text content (stopReason={stop_reason!r}). "
             f"Full response: {data}"
         )
+    if stop_reason == "max_tokens":
+        print(
+            f"Warning: Bedrock hit max_tokens ({max_tokens}); response is truncated "
+            "and likely unparseable. Raise max_tokens or reduce prompt size.",
+            file=sys.stderr,
+        )
     return text_blocks[0]
 
 
