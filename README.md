@@ -1,210 +1,259 @@
-# Style guide bot for CAI GitHub projects
+# Style-guide review bot — self-guided demo
 
-## Problem
+This is a walkthrough of the automated code-review bot built during hack
+week. The bot reviews pull requests in our open-source repos for
+style-guide conformance, and is starting to propose small proactive
+cleanup PRs of its own.
 
-Our team maintains several public open-source repositories across multiple programming languages. Keeping code consistent with our style guide is manual, easy to forget, and doesn't scale across repos. This project is an effort to build an automated system that both catches style issues in new PRs and gradually improves existing code.
+Everything below is live — the linked PRs are real runs of the bot against
+a sandbox mirror of `c2pa-rs`. You should be able to click through and see
+exactly what a reviewer on one of our teams would see.
 
-## Goals
+> **Status:** Prototype. Currently running against
+> [`scouten-adobe/TEMP-c2pa-rs`](https://github.com/scouten-adobe/TEMP-c2pa-rs),
+> a public sandbox cloned (not forked) from `c2pa-rs`. Design notes and the
+> phased rollout plan live in
+> [`implementation-notes.md`](implementation-notes.md).
 
-1. **PR Review:** Automatically review every new PR for style guide conformance and post suggested changes.
-2. **Proactive Cleanup:** Periodically scan the main branch and open small, focused PRs that improve existing code.
-3. **Multi-repo, multi-language:** Works across the org's public repos (Rust, possibly others).
-4. **Extensible:** Start with Eric's personal style guide ([howicode.ericscouten.com](https://howicode.ericscouten.com/)); add team-specific rules over time.
-5. **Low cost:** Prefer free resources; accept modest compute costs for the AI backbone.
+---
 
-## Style guide summary
+## 1. What the bot is looking for
 
-The bot would enforce / nudge us toward these principles:
-  
-_(Eric's editorial comment: Some of these are language-preference style guides from [my personal style guide](https://howicode.ericscouten.com/) that may not apply here. And these are, of course, subject to debate and evolution.)_
+The bot enforces a written style guide, not a hard-coded set of heuristics.
+The single source of truth is [`style-guide.md`](style-guide.md) in this
+repo — the same file is passed to Claude as part of the review prompt.
 
-## Proposed architecture
+Each rule has a **stable ID** (e.g., `CMT-01`, `SUM-02`, `FN-03`) so the
+bot can cite rules consistently in its suggestions, and a **severity**
+(`warning` / `suggestion` / `info`, or `Required` / `Recommended`). Rule
+groups today:
+
+| Prefix | Scope |
+| --- | --- |
+| `CMT` | Comment & prose rules (all languages) |
+| `WS` | Vertical whitespace (all languages) |
+| `GIT` | Git & PR title conventions |
+| `TEST` | Testing |
+| `GEN`, `SUM`, `FN`, `TY`, `MOD`, `MD`, `PR`, `AP` | Rust documentation rules (`.rs` files only), synthesized from RFC 505, RFC 1574, the Rust API Guidelines, and the Rust standard library's conventions |
+
+Most of the general (`CMT` / `WS` / `GIT` / `TEST`) rules come from
+[howicode.ericscouten.com](https://howicode.ericscouten.com/). The Rust
+rules come from the Rust community's own docs.
+
+### How a review happens
+
+On every PR `opened` or `synchronize` event:
+
+1. The shared GitHub Actions workflow in this repo is invoked from the
+   target repo.
+2. The bot fetches the PR diff and the full contents of each changed file
+   for context.
+3. It sends the diff, the file context, and `style-guide.md` to the Claude
+   API.
+4. Claude returns a structured list of findings, each tied to a specific
+   file, line, and rule ID.
+5. The bot posts those findings as **inline GitHub review comments** using
+   the `COMMENT` review type — advisory, not blocking. Each comment
+   includes a suggested fix using GitHub's ` ```suggestion ` syntax so
+   authors can accept it with one click.
+
+A few guardrails worth calling out:
+
+- **No logic changes.** The bot is explicitly told it may only propose
+  changes to comments, documentation, and whitespace. It is not allowed to
+  suggest code / behavior changes.
+- **Capped at ~15–20 comments per review.** Anything past that gets rolled
+  up into a summary, so a noisy PR never drowns the author.
+- **Diff-scoped.** Comments only land on lines the PR actually touches.
+- **`.botignore`** excludes auto-generated and vendored files.
+
+For more on the design — architecture, cost model, phased plan — see
+[`implementation-notes.md`](implementation-notes.md).
+
+---
+
+## 2. Demo: a PR that introduces a style violation
+
+**PR:** [TEMP-c2pa-rs#78 — `fix: Make another format violation PR`](https://github.com/scouten-adobe/TEMP-c2pa-rs/pull/78)
+
+This PR adds a single throwaway doc comment that violates two rules at
+once: it's not a complete sentence (`CMT-04` — complete sentences) and it
+doesn't use sentence case (`CMT-01`).
+
+The bot posts a single inline comment naming both rules, explaining the
+problem in one short paragraph, and offering a one-click ` ```suggestion `
+fix:
+
+> **Style: Use complete sentences in comments and documentation** …and
+> **Style: Use sentence case in comments and documentation**
+>
+> This doc comment is not a complete sentence — it lacks a capital letter
+> and trailing period. It also reads as informal/unclear prose rather than
+> a meaningful description. Please replace it with a proper doc comment
+> describing what the item does.
+>
+> ```suggestion
+> /// Signs the provided data using the given signer.
+> ```
+
+Things to notice when you click through:
+
+- The top-level review summary says **"Style review found 1 issue"** — not
+  approval, not rejection.
+- The suggestion is a real, applyable patch — the author can accept it
+  with GitHub's built-in "Commit suggestion" button.
+- Each rule is linked back to the canonical style guide.
+
+![inline comment on PR #78 showing the "Commit suggestion" button](./2026-04-23-demo/pr-78-suggestion.png)
+
+---
+
+## 3. Demo: a PR with no style violations
+
+**PR:** [TEMP-c2pa-rs#79 — `chore: Add a doc comment that should pass validation`](https://github.com/scouten-adobe/TEMP-c2pa-rs/pull/79)
+
+This PR adds a well-formed doc comment — complete sentence, sentence case,
+correct summary form for Rust (`SUM-02` third-person singular present
+indicative).
+
+The bot's review is a single line:
+
+> **Style review complete — no issues found. ✅**
+
+That's the entire output. No inline noise, no "nits", no unsolicited
+refactoring. The goal is for the green-checkmark case to be common and
+quiet — if the bot only speaks when it has something useful to say,
+authors are more likely to read what it does post.
+
+![green-check summary review on PR #79](./2026-04-23-demo/pr-79-no-suggestions.png)
+
+---
+
+## 4. Demo: review feedback on a more complex PR
+
+**PR:** [TEMP-c2pa-rs#80 — `perf: Optimize signing passes/copies for large JPEGs`](https://github.com/scouten-adobe/TEMP-c2pa-rs/pull/80)
+
+_(Mirror of a real in-flight PR from `c2pa-rs`, posted here with Nick's
+permission so we can show the bot's behavior on a realistic change.)_
+
+This is a substantive refactor: **+88 / −116 lines across a single large
+file**. It's the most representative example of what the bot would see on
+a typical working PR.
+
+A few things this PR illustrates well:
+
+- **The bot is iterative.** Each new push triggered a fresh review, and
+  over the course of the PR's life the bot posted 15+ reviews as the
+  author revised. Each review summary ("found 11 issues", "found 7
+  issues", …) reflects the state of the diff at that moment, so a
+  disappearing issue count is a signal that the author is converging.
+- **The bot caught a PR-title violation.** One of the reviews notes:
+  > _I also updated the PR title: `perf: optimize signing passes/copies
+  > for large JPEGs` → `perf: Optimize signing passes/copies for large
+  > JPEGs` (The description after the 'perf:' prefix must begin with a
+  > capital letter per Rule 1 (sentence case). 'optimize' should be
+  > 'Optimize'.)_
+
+  `GIT` rules apply to PR titles too, not just code.
+- **Comments stay scoped to comments/docs.** Even though this PR is a
+  performance refactor, the bot did not propose rewriting any of the
+  logic. Every suggestion was about a doc comment, a `// TODO:`, or a
+  whitespace/formatting concern.
+- **Rule IDs are visible in every comment.** Scroll through the inline
+  comments and you'll see each one tagged with the rule it cites
+  (`CMT-02`, `SUM-02`, etc.) — that's what makes the feedback auditable
+  and debatable. (NOTE: Some of the comments in this PR are from an
+  earlier version of the bot which used absolute rule numbers.
+  The stable identifiers were adopted later.)
+
+![a slice of PR #80's "Files changed" view](./2026-04-23-demo/pr-80-suggestion.png)
+
+---
+
+## 5. Demo: proactive cleanup
+
+**PR:** [TEMP-c2pa-rs#81 — ``style: Clean up comment formatting in `sdk/src/jumbf_io.rs` ``](https://github.com/scouten-adobe/TEMP-c2pa-rs/pull/81)
+
+This is the second mode the bot is growing into: rather than reacting to
+human PRs, it periodically picks a module, re-reads it against the style
+guide, and opens its own small PR with the fixes.
+
+PR #81 is one module's worth of cleanup (`sdk/src/jumbf_io.rs`): +65 / −51
+lines, 23 distinct edits, all comment- and whitespace-only. The PR body
+lists every edit with its rule ID:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ Bot Repo: (this repo).                                  │
-│ ├── style-guide.md (canonical rules for prompt)         │
-│ ├── per-repo overrides (optional)                       │
-│ └── reusable workflow (.github/workflows/)              │
-│ ├── pr-review.yml                                       │
-│ └── proactive-cleanup.yml                               │
-└─────────────────────────────────────────────────────────┘
- │ called by each repo via
- │ `uses: org/style-bot-config/.github/workflows/pr-review.yml@main`
- ▼
-┌─────────────────────────────────────────────────────────┐
-│ Target Repo (e.g., c2pa-rs)                             │
-│ .github/workflows/                                      │
-│ ├── style-review.yml → calls shared PR review           │
-│ └── style-cleanup.yml → calls shared cleanup            │
-└─────────────────────────────────────────────────────────┘
+- CMT-02 — Standalone comment must start with a capital letter and end with a period.
+- CMT-06 — The trailing comment described behavior so it was moved to its own line above the statement and rewritten as a complete sentence.
+- SUM-02 — Summary line must use third-person singular present indicative ('Returns') and end with a period.
+- CMT-07 — Several doc-comment lines exceeded 80 columns and needed rewrapping; …
+…
 ```
 
-### Component 1: Shared style guide prompt
+The PR description also confirms the guardrails ran:
 
-A single Markdown file that encodes our style guide as instructions for Claude. This is the single source of truth; when you update the style guide website, you update this file. It would include:
+> _This PR was produced by the style-cleanup bot and is comment-only /
+> whitespace-only. `cargo fmt` and `cargo check` both passed locally
+> before it was opened._
 
-- All the rules above, written as actionable review instructions
-- Per-language notes (e.g., "For Rust, check that \`rustfmt.toml\` matches these settings")
-- Examples of good vs. bad style
-- Severity levels (e.g., "sentence case in comments" = suggestion, "missing test coverage" = warning)
+### Caveat — what's still incomplete
 
-### Component 2: PR review workflow
+PR #81 is a **one-shot manual run**, not yet on the rails we want:
 
-**Trigger:** `pull_request` events (opened, synchronize)
+- Today it's invoked by hand on a single chosen file.
+- There is no rotation logic yet — the bot doesn't remember which modules
+  it has already visited.
+- There is no scheduled trigger yet.
 
-**Flow:**
+The target state (easily added to this infrastructure) is that this runs automatically (weekly?), rotates
+through the codebase, and proposes 1–2 small documentation-cleanup PRs
+per run without any human prompting.
 
-1. GitHub Actions workflow starts
-2. Fetch the PR diff via `gh pr diff`
-3. Fetch changed file contents for context (full files, not just hunks)
-4. Send to Claude API with the style guide prompt + diff + file context
-5. Parse Claude's response into file-specific inline comments
-6. Post as a **GitHub PR review** using the GitHub API (`POST /repos/{owner}/{repo}/pulls/{number}/reviews`)
+![the "Files changed" view of PR #81 showing the before/after of a doc comment](./2026-04-23-demo/pr-81-doc-patch.png)
 
-**Output format:** A single PR review with inline comments at specific lines, using GitHub's "COMMENT" review type (not "REQUEST\_CHANGES" — keeps it advisory). Each comment would include:
+---
 
-- What the style issue is
-- A concrete suggested fix (using GitHub's suggestion syntax: ` ```suggestion `)
-- Which style guide rule it references
+## Areas for future development
 
-**Example comment:**
+If we decide to push this further as a team, these are the biggest open
+questions:
 
-> **Style: Use complete sentences in comments** ([Reference](https://howicode.ericscouten.com/language/complete-sentences))
-> 
-> ` ```suggestion `  
-> `// Recursively apply passthrough replacement and write the result.`  
-> ` ``` `
+1. **Comments & docs only, or coding style too?** Today's strongest
+   guardrail is "no logic or code changes." Should we relax that and let
+   the bot comment on (or fix) coding style as well — naming, early
+   returns, error handling, `match` vs. `if let`, etc.? That's a much
+   bigger blast radius and a much bigger debate.
+2. **Whose style guide?** The current [`style-guide.md`](style-guide.md)
+   is largely Eric's personal preferences, with heavy borrowing from the
+   Rust standard library's own conventions. For this to be useful to the
+   team, we'd need to decide as a team which rules we actually want to
+   share and enforce.
+3. **Architecture diagrams / subsystem descriptions.** Could a similar bot
+   maintain (or at least propose updates to) architecture docs and
+   subsystem READMEs as code evolves? That's a much richer prompt but the
+   mechanics are the same.
+4. **How large is too large?** The bot caps review size at ~15–20 comments
+   per PR, and cleanup PRs at one module at a time, because my intuition
+   is that anything more feels overwhelming. Those numbers are guesses —
+   what are the actual limits the team would tolerate?
+5. **Test coverage / additional tests.** Could this bot (or a sibling)
+   propose missing unit-test coverage, suggest property-based tests, or
+   flag untested branches? "Helpful assistant for tests" feels like a
+   natural next axis.
 
-**Key design decisions:**
+Feedback, objections, and "please never do X" notes are all welcome — open
+an issue or ping Eric directly.
 
-- Use `COMMENT` not `REQUEST_CHANGES` to keep the bot advisory, not blocking
-- Rate-limit: max ~15-20 comments per review to avoid overwhelming the author
-- Skip files that are auto-generated, vendored, or in `.botignore`
-- Only comment on lines that are part of the diff (new or modified lines)
+---
 
-### Component 3: Proactive cleanup workflow
+## Pointers
 
-**Trigger:** Cron schedule (e.g., weekly on Monday morning)
-
-**Flow:**
-
-1. GitHub Actions workflow starts on schedule
-2. Select a "unit" of code to review:
-    - One module/directory at a time
-    - Track what's been reviewed recently (via a state file or GitHub issues) to rotate through the codebase
-3. Send the files + style guide to Claude API
-4. Ask Claude to propose changes, grouped by logical theme
-5. For each group of changes:
-    - Create a branch (`style-bot/improve-{module}-{date}`)
-    - Apply changes
-    - Open a PR with a clear description of what was changed and why
-6. Limit: max 1-2 PRs per run to keep the queue manageable
-
-**PR characteristics:**
-
-- Small scope: one module or one type of improvement at a time
-- Clear title: e.g., "style: Improve comment formatting in `sdk/src/parser`"
-- Description explains each change with style guide references
-- Labels: `style-bot`, `auto-generated`
-
-**Guardrails:**
-
-- Never modify logic or behavior — style/formatting/comments only
-- Run `cargo fmt` / language formatter + `cargo check` / equivalent before opening PR
-- Don't open a new PR if there's already an open style-bot PR for that module
-- Configurable: repos can opt out of proactive cleanup
-- TEMPORARY during initial development: Runs against a [separate public sandbox repo](https://github.com/scouten-adobe/TEMP-c2pa-rs), which cloned but not forked from c2pa-rs
-
-## Technology choices
-
-## Cost estimate
-
-For a typical PR review (~500 lines of diff + ~2000 lines of context):
-
-- ~3K input tokens, ~1K output tokens per review
-- Claude Sonnet: ~$0.01-0.03 per PR review
-- For 50 PRs/month across repos: **~$1-2/month**
-
-For proactive cleanup (reviewing one module per week per repo):
-
-- ~10K input tokens, ~3K output tokens per module
-- 4 repos × 4 reviews/month: **~$1-2/month**
-
-**Total estimated cost: $2-5/month** for the Claude API usage. GitHub Actions minutes are free for public repos.
-
-## Implementation plan
-
-### Phase 1: Foundation ✅
-
-- ~~Create the repo~~ — done
-- ~~Write the style guide prompt~~ ([`style-guide.md`](style-guide.md)) — 6 rules from [howicode.ericscouten.com](https://howicode.ericscouten.com/) with severity levels and examples
-- ~~Build the core review script~~ ([`scripts/review_pr.py`](scripts/review_pr.py)) — fetches PR diff, calls Claude, posts inline GitHub review comments
-- ~~Test locally against a sample PR diff from c2pa-rs~~ – DONE
-
-### Phase 2: PR review bot ✅
-
-- ~~Build the GitHub Actions workflow for PR review~~ ([`.github/workflows/pr-review.yml`](.github/workflows/pr-review.yml)) — reusable `workflow_call` workflow
-- ~~Implement the comment-posting logic~~ (inline review comments with suggestion syntax) — done in `review_pr.py`
-- ~~Handle edge cases: binary files, auto-generated files~~ — done; large PRs (chunking) still TODO
-- ~~Deploy to a test repo, open a test PR~~ — successfully generated review comments against a sample PR in a sandbox repo
-
-### Phase 3: Proactive cleanup bot
-
-- Build the module-selection logic (rotate through directories)
-- Build the change-application pipeline (branch, apply, format, check, PR)
-- Implement guardrails (no logic changes, formatter check, duplicate PR check)
-- Test on c2pa-rs
-
-### Phase 4: Polish and multi-repo
-
-- ~~Add `.botignore` support~~ — done in `review_pr.py`
-- Add per-repo configuration overrides
-- Deploy to a second repo to validate multi-repo support
-- Write documentation for onboarding new repos
-
-### Phase 5: Demo and iterate
-
-- Demo to the team
-- Collect feedback, iterate on prompt quality and comment formatting
-- Plan post-hack-week roadmap (custom rules, dashboards, etc.)
-
-## Alternatives considered
-
-### Why not use existing linters (clippy, eslint, etc.)?
-
-Linters catch mechanical issues but can't evaluate subjective style preferences like "use vertical whitespace intentionally" or "avoid cleverness." The style guide is fundamentally about judgment and readability, which is where an LLM excels. _(Also: We already use these to the extent they are available.)_
-
-### Why not use an existing review bot (e.g., CodeRabbit, Sourcery)?
-
-These are good products but:
-
-- They impose their own style opinions rather than enforcing ours
-- They're not easily customizable to a personal/team style guide
-- Many are paid services with per-seat pricing that doesn't fit the "low cost for public repos" goal
-- Building our own gives full control over the prompt, output format, and behavior
-- (Separate from this proposal, I'm _also_ investigating deploying [Greptile](https://greptile.ai/), which has some ability to adapt to a team's style)
-
-### Why Claude over GPT-4 or other models?
-
-- Corporate support for using Claude
-- Strong code review quality at competitive pricing
-- Sonnet hits the sweet spot of quality vs. cost for this use case
-
-### PR-against-PR (alternative output for large changes)
-
-### If a review would produce more than ~20 suggestions, the bot could instead:
-
-1. Create a branch from the PR's head
-2. Apply all suggestions
-3. Open a PR targeting the original PR's branch
-4. Comment on the original PR: "I had a lot of suggestions, so I opened #123 with all of them applied."
-
-This is worth building as a later enhancement.
-
-## Open questions
-
-1. **Bot identity:** Use a dedicated GitHub bot account or a personal access token? (Bot account is cleaner for team repos.)
-2. **Review gating:** Should the bot review be required to pass before merge, or purely advisory? (Recommend: advisory to start.)
-3. **Cleanup PR approval:** Should cleanup PRs auto-merge after CI passes, or always require human review? (Recommend: always human review to start.)
-4. **Prompt iteration:** How do you want to iterate on the style guide prompt? Track it in the config repo with PRs, or iterate more informally?
+- Style guide: [`style-guide.md`](style-guide.md)
+- Review script: [`scripts/review_pr.py`](scripts/review_pr.py)
+- Cleanup script: [`scripts/cleanup_module.py`](scripts/cleanup_module.py)
+- Example target-repo workflow:
+  [`examples/target-repo-pr-review.yml`](examples/target-repo-pr-review.yml)
+- Architecture, cost model, and phased plan:
+  [`implementation-notes.md`](implementation-notes.md)
+- Sandbox repo the demos run against:
+  [`scouten-adobe/TEMP-c2pa-rs`](https://github.com/scouten-adobe/TEMP-c2pa-rs)
