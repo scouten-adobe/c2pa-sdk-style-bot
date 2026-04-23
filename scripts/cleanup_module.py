@@ -43,7 +43,8 @@ from review_pr import (  # type: ignore
 )
 
 MAX_PROMPT_CHARS = 180_000  # rough Bedrock-safe ceiling for the prompt body
-MAX_EDITS = 40
+MAX_EDITS = 100
+MAX_OUTPUT_TOKENS = 16_384
 SUPPORTED_EXTENSIONS = {".rs"}  # Rust only for MVP
 COMMENT_LINE_RE = re.compile(r"//.*$", re.MULTILINE)
 
@@ -197,17 +198,31 @@ proposing edits.
    - `new_block` (string): the replacement text. It must differ from
      `original_block` ONLY in comments and/or whitespace. Do not change
      any code tokens, string literals, or control flow.
-   - `rule` (string): which style-guide rule this fixes (e.g. "Rule 2").
+   - `rule` (string): the stable ID of the style-guide rule this fixes (e.g. "CMT-02", "WS-01").
    - `rationale` (string): one sentence explaining what changed and why.
 
 3. **Allowed changes:**
    - Rewording or capitalizing comment text.
    - Adding a trailing period to a comment.
-   - Fixing sentence case or acronym casing in comments / doc comments.
-   - Adding or removing blank lines (Rule 4).
+   - Fixing sentence case or acronym casing in comments / doc comments
+     (`CMT-01`, `CMT-03`).
+   - Adding or removing blank lines (`WS-01`).
    - Moving a trailing end-of-line comment that describes behavior onto its
-     own line above the statement (Rule 9). This is still a comment-and-
+     own line above the statement (`CMT-06`). This is still a comment-and-
      whitespace change — the code statement itself stays byte-identical.
+   - Rewrapping an over-long standalone comment to ≤80 columns (`CMT-07`),
+     including splitting one `///` line into several `///` lines.
+
+**HARD CONSTRAINT on `new_block` comment text (`CMT-07`):**
+Every comment line you emit inside `new_block` — including every line of a
+rewrapped doc comment, every wrapped continuation of a rewritten `//` block,
+and every trailing end-of-line comment — MUST be ≤80 columns of total
+source-file width (leading indentation + comment marker + prose). Count
+each candidate line before you emit it. If a proposed replacement line
+would exceed 80 columns, split it at a word boundary onto additional
+comment lines. Do not emit a `new_block` containing any comment line
+longer than 80 columns; if you cannot satisfy the 80-column limit for
+some reason, drop that edit rather than emit an over-long line.
 
 4. **Forbidden changes:**
    - Any change to code tokens, identifiers, literals, or operators.
@@ -231,7 +246,7 @@ def call_claude_for_edits(style_guide: str, file_sections: str, subpath: str) ->
             f"Prompt too large ({len(prompt):,} > {MAX_PROMPT_CHARS:,}); "
             "reduce --max-files or pick a smaller path."
         )
-    raw = _bedrock_completion(prompt, max_tokens=8192)
+    raw = _bedrock_completion(prompt, max_tokens=MAX_OUTPUT_TOKENS)
     print(f"Raw response ({len(raw)} chars).")
     text = raw.strip()
     if text.startswith("```json"):
@@ -272,6 +287,24 @@ def _strip_comments_and_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", no_comments).strip()
 
 
+_COMMENT_START_RE = re.compile(r"^\s*(?://|#)")
+CMT_07_LIMIT = 80
+
+
+def _overlong_comment_lines(text: str, limit: int = CMT_07_LIMIT) -> set[str]:
+    """Return the set of standalone-comment lines in text wider than limit.
+
+    A 'standalone comment' is a line whose content after leading indentation
+    begins with `//` or `#` — i.e., `//`, `///`, `//!`, or a Python-style
+    `#`. Trailing end-of-line comments (code followed by `//`) are not
+    considered here, since they follow their adjacent code column.
+    """
+    return {
+        ln for ln in text.splitlines()
+        if len(ln) > limit and _COMMENT_START_RE.match(ln)
+    }
+
+
 def validate_edit(edit: dict, repo_root: Path) -> tuple[bool, str]:
     """Return (ok, reason). Does not mutate anything."""
     for key in ("path", "original_block", "new_block"):
@@ -294,6 +327,14 @@ def validate_edit(edit: dict, repo_root: Path) -> tuple[bool, str]:
 
     if _strip_comments_and_whitespace(new) != _strip_comments_and_whitespace(original):
         return False, "edit touches non-comment / non-whitespace content"
+
+    newly_overlong = _overlong_comment_lines(new) - _overlong_comment_lines(original)
+    if newly_overlong:
+        sample = next(iter(newly_overlong))
+        return False, (
+            f"new_block introduces {len(newly_overlong)} comment line(s) "
+            f"exceeding {CMT_07_LIMIT} cols (CMT-07); e.g. {sample!r}"
+        )
 
     return True, ""
 

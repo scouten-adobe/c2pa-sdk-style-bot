@@ -280,17 +280,17 @@ Each file shows the new-file content around the changed regions with real line n
 
 1. Identify style violations on lines **inside the declared in-scope ranges** above (these are the lines ADDED by this PR). Consider the surrounding context when judging the change, but **never flag unchanged lines** — even if they contain style issues, they are not part of this change. In particular, a line shown near a deletion but unchanged in the new file is out of scope.
 
-2. **Scan exhaustively, not selectively.** Walk every in-scope line and check it against every rule in the style guide. Do not stop early after finding a handful of issues; do not prioritize "impactful" issues over others; do not drop minor violations to keep the list short. Report every genuine violation you can find, up to a cap of {MAX_COMMENTS} comments. Pay particular attention to structural rules that span a range of lines — Rule 4 (vertical whitespace, including blank lines between multi-line `match`/`switch` arms) and Rule 9 (trailing comments that describe behavior) — since these are easy to miss when reading comment-by-comment. Do not invent rules that aren't in the guide, and do not flag stylistic preferences that aren't covered.
+2. **Scan exhaustively, not selectively.** Walk every in-scope line and check it against every rule in the style guide. Do not stop early after finding a handful of issues; do not prioritize "impactful" issues over others; do not drop minor violations to keep the list short. Report every genuine violation you can find, up to a cap of {MAX_COMMENTS} comments. Pay particular attention to structural rules that are easy to miss when reading comment-by-comment: `WS-01` (vertical whitespace, including blank lines between multi-line `match`/`switch` arms), `CMT-06` (trailing comments that describe behavior), and `CMT-07` (comment lines longer than 80 columns). For `CMT-07`, actively measure: for each in-scope line that is a standalone comment (`//`, `///`, `//!`, `#`, etc.), count the column width of the full source line as it appears in the file (the number shown in the numbered listing is NOT part of the source — ignore the `NNNNN: ` prefix when counting). If the source-file column width exceeds 80 and the line is not covered by a `CMT-07` exception, flag it. Do not invent rules that aren't in the guide, and do not flag stylistic preferences that aren't covered.
 
 3. For each issue, produce a JSON object with:
    - `path` (string): file path (no `a/` or `b/` prefix)
    - `line` (integer): the new-file line number where the issue appears, copied from the numbered listing above
    - `original_line` (string): the exact, verbatim current content of that line in the new file (copy it from the numbered listing; omit the line-number prefix and the `: ` separator, but preserve all leading/trailing whitespace in the actual code). This is used to verify alignment — if it doesn't match the file, your comment will be dropped.
    - `body` (string): GitHub-flavored markdown comment body including:
-     - Bold header: the rule name
+     - Bold header formatted as **`<RULE-ID>` — <short rule name>** (for example: **`CMT-01` — Use sentence case**)
      - Reference link to the style guide page
      - Brief explanation of the issue
-     - A concrete `suggestion` code block if a fix is straightforward (use GitHub suggestion syntax: three backticks followed by `suggestion`). The suggestion block **replaces the single line at `line`** — make sure its content is a drop-in replacement for `original_line`, preserving the same indentation and surrounding code structure.
+     - A concrete `suggestion` code block if a fix is straightforward (use GitHub suggestion syntax: three backticks followed by `suggestion`). The suggestion block **replaces the single line at `line`** — make sure its content is a drop-in replacement for `original_line`, preserving the same indentation and surrounding code structure. **Every comment line you emit inside a `suggestion` block must be ≤80 columns of source-file width (`CMT-07`)**, including every line of a rewrapped comment. If you cannot fit the fix into ≤80-column lines, split the replacement onto multiple comment lines inside the same `suggestion` block (GitHub will apply the multi-line replacement to the single target line) — do NOT emit a suggestion containing any comment line longer than 80 columns.
    - `severity` (string): one of `"suggestion"`, `"warning"`, or `"info"`
 
 4. If multiple rules are violated on the same line, **consolidate them into a single comment** that covers all violations. List each rule name and explanation in the same comment body, and provide only one `suggestion` block that fixes all issues at once.
@@ -305,14 +305,14 @@ Example output (two comments):
     "path": "src/lib.rs",
     "line": 42,
     "original_line": "    // recursively apply passthrough replacement and write",
-    "body": "**Style: Use complete sentences in comments** ([Reference](https://howicode.ericscouten.com/language/complete-sentences))\\n\\nThis comment is missing a trailing period and a capital letter.\\n\\n```suggestion\\n    // Recursively apply passthrough replacement and write the result.\\n```",
+    "body": "**`CMT-02` — Use complete sentences in comments** ([Reference](https://howicode.ericscouten.com/language/complete-sentences))\\n\\nThis comment is missing a trailing period and a capital letter.\\n\\n```suggestion\\n    // Recursively apply passthrough replacement and write the result.\\n```",
     "severity": "suggestion"
   }},
   {{
     "path": "src/parser.rs",
     "line": 17,
     "original_line": "// Parses The Header Block",
-    "body": "**Style: Use sentence case** ([Reference](https://howicode.ericscouten.com/language/sentence-case))\\n\\nComment uses title case. Only capitalize the first word and proper nouns.",
+    "body": "**`CMT-01` — Use sentence case** ([Reference](https://howicode.ericscouten.com/language/sentence-case))\\n\\nComment uses title case. Only capitalize the first word and proper nouns.",
     "severity": "suggestion"
   }}
 ]"""
@@ -480,14 +480,14 @@ def build_title_prompt(style_guide: str, pr_title: str) -> str:
 
 Apply the full rule set above to this PR title. Note these specifics:
 
-- **PR titles must NOT end with a period.** This is an explicit exception to Rule 2's complete-sentence requirement (see Rule 2, Exception 3). If the current title ends with a period, that is itself a violation — remove it.
-- Rule 5 (Conventional Commits format) applies: a good PR title looks like `type(scope): description` or `type: description`.
-- **Rule 1 (sentence case) applies to the description portion after any `type:` or `type(scope):` prefix.** The first word of the description MUST start with a capital letter. This overrides the common Conventional Commits convention of lowercase descriptions. Examples:
+- **PR titles must NOT end with a period.** This is an explicit exception to `CMT-02`'s complete-sentence requirement (see `CMT-02`, Exception 3). If the current title ends with a period, that is itself a violation — remove it.
+- `GIT-01` (Conventional Commits format) applies: a good PR title looks like `type(scope): description` or `type: description`.
+- **`CMT-01` (sentence case) applies to the description portion after any `type:` or `type(scope):` prefix.** The first word of the description MUST start with a capital letter. This overrides the common Conventional Commits convention of lowercase descriptions. Examples:
   - `perf: optimize signing passes` → **violation** — must be `perf: Optimize signing passes`
   - `fix(parser): handle empty input` → **violation** — must be `fix(parser): Handle empty input`
   - `feat: Add multi-line support` → compliant
   - `Optimize signing passes` (no prefix) → compliant (already capitalized)
-- Rules 3, 7, 8 apply (acronym casing, no informal abbreviations, grammar).
+- `CMT-03`, `CMT-04`, `CMT-05` apply (acronym casing, no informal abbreviations, grammar).
 - Only propose a retitle for clear rule violations — not for stylistic preferences. A lowercase first word of the description after a `type:` prefix IS a clear violation.
 
 Output a single JSON object.
